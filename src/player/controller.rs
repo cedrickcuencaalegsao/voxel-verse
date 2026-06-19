@@ -1,6 +1,7 @@
 use super::{
     camera::{
-        PlayerBody, PlayerCamera, cycle_camera_view, grab_cursor, player_look, toggle_cursor_grab,
+        PlayerBody, PlayerCamera, cycle_camera_view, grab_cursor, handle_cursor_auto_grab,
+        player_look, toggle_cursor_grab,
     },
     movement::{Grounded, MovementSettings, Velocity, player_movement},
 };
@@ -18,6 +19,7 @@ impl Plugin for PlayerPlugin {
                 (
                     player_movement,
                     toggle_cursor_grab,
+                    handle_cursor_auto_grab, // Added to auto-regrab cursor on click
                     cycle_camera_view,
                     player_look,
                 )
@@ -32,19 +34,6 @@ fn spawn_player(
     mut materials: ResMut<Assets<StandardMaterial>>,
     world: Res<WorldManager>,
 ) {
-    // ── spawn position ────────────────────────────────────────────────────────
-    //
-    // Use `spawn_height_at()` — NOT `height_at()`.
-    //
-    // `height_at()` returns the biome-blended fBm surface, which can put the
-    // player deep inside a mountain or high in the air because the spawn area
-    // uses a separate, simpler noise formula to keep it stable.
-    //
-    // `spawn_height_at()` mirrors the exact same single-octave noise used by
-    // `spawn_block_at()`, so the Y value always matches the actual ground block.
-    //
-    // The +1.0 offset places the player's feet on top of that ground block
-    // (block occupies [ground_y, ground_y+1], player stands at ground_y+1).
     let ground_y = world.generator.spawn_height_at(0.0, 0.0) as f32;
     let spawn_position = Vec3::new(0.0, ground_y + 1.0, 0.0);
     let camera_target = spawn_position + Vec3::Y * 1.1;

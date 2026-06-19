@@ -33,23 +33,36 @@ pub enum CameraMode {
     FirstPerson,
 }
 
-/// Marker for the player's visible body mesh — hidden in first-person so the
-/// camera isn't stuck staring at the inside of its own model.
+/// Marker for the player's visible body mesh
 #[derive(Component)]
 pub struct PlayerBody;
 
-/// Locks and hides the OS cursor on startup so mouse delta drives the
-/// camera directly instead of a visible pointer wandering off the window.
+/// Locks and hides the OS cursor on startup.
 pub fn grab_cursor(mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>) {
-    let Ok(mut cursor_options) = cursor_options.single_mut() else {
-        return;
-    };
-    cursor_options.grab_mode = CursorGrabMode::Locked;
-    cursor_options.visible = false;
+    if let Ok(mut cursor) = cursor_options.single_mut() {
+        cursor.grab_mode = CursorGrabMode::Locked;
+        cursor.visible = false;
+    }
 }
 
-/// Escape frees the cursor (handy for alt-tabbing or debugging); pressing it
-/// again re-locks it.
+/// Automatically re-grabs the cursor if the player clicks the window.
+/// This prevents the cursor lock from being permanently lost when entering fullscreen
+/// or when alt-tabbing.
+pub fn handle_cursor_auto_grab(
+    mouse_buttons: Res<ButtonInput<MouseButton>>,
+    mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
+) {
+    if mouse_buttons.just_pressed(MouseButton::Left) {
+        if let Ok(mut cursor) = cursor_options.single_mut() {
+            if cursor.grab_mode == CursorGrabMode::None {
+                cursor.grab_mode = CursorGrabMode::Locked;
+                cursor.visible = false;
+            }
+        }
+    }
+}
+
+/// Escape frees the cursor; pressing it again re-locks it.
 pub fn toggle_cursor_grab(
     keys: Res<ButtonInput<KeyCode>>,
     mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
@@ -57,16 +70,16 @@ pub fn toggle_cursor_grab(
     if !keys.just_pressed(KeyCode::Escape) {
         return;
     }
-    let Ok(mut cursor_options) = cursor_options.single_mut() else {
+    let Ok(mut cursor) = cursor_options.single_mut() else {
         return;
     };
-    let locked = cursor_options.grab_mode != CursorGrabMode::None;
+    let locked = cursor.grab_mode != CursorGrabMode::None;
     if locked {
-        cursor_options.grab_mode = CursorGrabMode::None;
-        cursor_options.visible = true;
+        cursor.grab_mode = CursorGrabMode::None;
+        cursor.visible = true;
     } else {
-        cursor_options.grab_mode = CursorGrabMode::Locked;
-        cursor_options.visible = false;
+        cursor.grab_mode = CursorGrabMode::Locked;
+        cursor.visible = false;
     }
 }
 
