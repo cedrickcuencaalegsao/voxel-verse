@@ -1,5 +1,5 @@
+use crate::rendering::atlas::{BlockAtlas, BlockFace, quad_uvs_for};
 use crate::rendering::greedy_meshing::generate_chunk_quads;
-use crate::rendering::materials::color_for_kind;
 use crate::world::chunk::Chunk;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -22,22 +22,26 @@ fn face_tangents(normal: [f32; 3]) -> (Vec3, Vec3) {
     }
 }
 
+/// Maps a quad's world-space normal to the logical [`BlockFace`] used to
+/// pick the correct atlas tile (e.g. Grass top vs. side vs. bottom).
+fn block_face_from_normal(normal: [f32; 3]) -> BlockFace {
+    match normal {
+        [0.0, 1.0, 0.0] => BlockFace::Top,
+        [0.0, -1.0, 0.0] => BlockFace::Bottom,
+        [0.0, 0.0, -1.0] => BlockFace::North,
+        [0.0, 0.0, 1.0] => BlockFace::South,
+        [1.0, 0.0, 0.0] => BlockFace::East,
+        [-1.0, 0.0, 0.0] => BlockFace::West,
+        _ => BlockFace::Top, // unreachable for axis-aligned voxel meshes
+    }
+}
+
 pub fn remesh_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut default_material: Local<Option<Handle<StandardMaterial>>>,
+    atlas: Res<BlockAtlas>,
     query: Query<(Entity, &Chunk), Changed<Chunk>>,
 ) {
-    let material_handle = default_material
-        .get_or_insert_with(|| {
-            materials.add(StandardMaterial {
-                base_color: Color::WHITE,
-                ..default()
-            })
-        })
-        .clone();
-
     for (entity, chunk) in query.iter() {
         if !chunk.needs_remesh {
             continue;
@@ -48,7 +52,6 @@ pub fn remesh_chunks(
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut uvs = Vec::new();
-        let mut colors = Vec::new();
         let mut indices = Vec::new();
         let mut vertex_index = 0u32;
 
@@ -76,14 +79,14 @@ pub fn remesh_chunks(
                 v3.to_array(),
             ]);
             normals.extend_from_slice(&[quad.normal; 4]);
-            uvs.extend_from_slice(&[
-                [quad.uv[0], quad.uv[1]],
-                [quad.uv[2], quad.uv[1]],
-                [quad.uv[2], quad.uv[3]],
-                [quad.uv[0], quad.uv[3]],
-            ]);
-            let c = color_for_kind(quad.block_kind).to_linear().to_f32_array();
-            colors.extend_from_slice(&[c; 4]);
+
+            // Atlas tile UVs replace the old per-block vertex color.
+            // NOTE: for merged quads wider/taller than 1 block, this stretches
+            // a single tile across the whole face rather than tiling it — see
+            // "UV stretching note" in the greedy meshing migration guide.
+            let face = block_face_from_normal(quad.normal);
+            uvs.extend_from_slice(&quad_uvs_for(quad.block_kind, face));
+
             indices.extend_from_slice(&[
                 vertex_index,
                 vertex_index + 1,
@@ -102,12 +105,22 @@ pub fn remesh_chunks(
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
         mesh.insert_indices(Indices::U32(indices));
 
+        // NOTE: all quads in a chunk currently share one opaque, textured
+        // material. Water blocks will render using the atlas texture's
+        // baked-in alpha=200 pixels, but AlphaMode::Opaque ignores alpha,
+        // so water will currently look fully solid instead of translucent.
+        //
+        // To get real water transparency, split `quads` into two groups
+        // (water vs. everything else) before the loop above, build two
+        // meshes, and spawn two entities — one with `atlas.opaque`, one
+        // with `atlas.translucent`. Flagging this as a follow-up rather
+        // than guessing at your water-detection logic (e.g. BlockKind::Water)
+        // since I don't have chunk.rs / block.rs in front of me.
         commands.entity(entity).insert((
             Mesh3d(meshes.add(mesh)),
-            MeshMaterial3d(material_handle.clone()),
+            MeshMaterial3d(atlas.opaque.clone()),
         ));
     }
 }
