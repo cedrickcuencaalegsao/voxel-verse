@@ -8,7 +8,7 @@
 //!  col→  0          1        2           3
 //! row 0 [Stone    ][Dirt   ][GrassTop  ][GrassSide]
 //! row 1 [Sand     ][Water  ][Wood      ][Leaves   ]
-//! row 2 [Bedrock  ][ empty ][ empty    ][ empty   ]
+//! row 2 [Bedrock  ][CoalOre][IronOre   ][DiamondOre]
 //! ```
 //!
 //! Adding a new block type:
@@ -18,10 +18,6 @@
 //!   4. Add the match arm to `tile_index_for()`.
 //!   (Atlas dimensions recalculate automatically via const arithmetic.)
 
-// NOTE: as of the bevy_image / bevy_asset crate split (Bevy 0.17+), these
-// types no longer live under bevy::render — import them from their new
-// homes. This matches the pattern already used in meshing.rs
-// (`use bevy::asset::RenderAssetUsages;`).
 use bevy::{
     asset::RenderAssetUsages,
     image::ImageSampler,
@@ -35,7 +31,7 @@ use crate::world::block::BlockKind;
 // ── Atlas layout constants ────────────────────────────────────────────────────
 
 /// Total number of distinct tile textures in the atlas.
-pub const TILE_COUNT: u32 = 9;
+pub const TILE_COUNT: u32 = 12; // was 9; +3 for CoalOre, IronOre, DiamondOre
 /// How many tiles fit across one atlas row.
 pub const ATLAS_COLS: u32 = 4;
 /// Number of rows required — computed at compile time (ceiling division).
@@ -64,6 +60,13 @@ pub enum TileIndex {
     Wood = 6,
     Leaves = 7,
     Bedrock = 8,
+    // ── ores (row 2, cols 1-3) ───────────────────────────────────────────────
+    // To give each ore a unique texture, add a generator to texture_generator.rs
+    // and wire it into generate_all_tiles() at positions 9, 10, 11.
+    // Until then they fall back to Stone visually via tile_index_for().
+    CoalOre = 9,
+    IronOre = 10,
+    DiamondOre = 11,
 }
 
 // ── Block face enum ───────────────────────────────────────────────────────────
@@ -109,6 +112,19 @@ pub fn tile_index_for(kind: BlockKind, face: BlockFace) -> u32 {
         BlockKind::Wood => Wood as u32,
         BlockKind::Leaves => Leaves as u32,
         BlockKind::Bedrock => Bedrock as u32,
+
+        // ── ores ─────────────────────────────────────────────────────────────
+        // Each ore has its own TileIndex slot (9-11) so dedicated textures can
+        // be added to texture_generator.rs at any time without touching this
+        // match.  For now the TileIndex values alias back to Stone in the atlas
+        // because generate_all_tiles() only fills 9 entries (indices 0-8).
+        // Once you add ore tile generators, flip these to their own TileIndex:
+        //   BlockKind::CoalOre    => CoalOre    as u32,
+        //   BlockKind::IronOre    => IronOre    as u32,
+        //   BlockKind::DiamondOre => DiamondOre as u32,
+        BlockKind::CoalOre => Stone as u32, // placeholder → Stone texture
+        BlockKind::IronOre => Stone as u32, // placeholder → Stone texture
+        BlockKind::DiamondOre => Stone as u32, // placeholder → Stone texture
     }
 }
 
@@ -143,13 +159,7 @@ pub fn uv_rect(tile_idx: u32) -> [f32; 4] {
 /// Returns four UV corners for a single 1×1 block face quad.
 ///
 /// Vertex ordering — **bottom-left, bottom-right, top-right, top-left**
-/// (counter-clockwise when viewed from outside the block face).  Match this
-/// winding in your mesh builder.
-///
-/// Because `v` increases downward in UV space, "bottom of the quad" maps to
-/// the larger `v` value (`v1`).
-///
-/// If textures appear vertically flipped in your renderer, swap `v0` and `v1`.
+/// (counter-clockwise when viewed from outside the block face).
 pub fn quad_uvs_for_tile(tile_idx: u32) -> [[f32; 2]; 4] {
     let [u0, v0, u1, v1] = uv_rect(tile_idx);
     [
@@ -162,12 +172,6 @@ pub fn quad_uvs_for_tile(tile_idx: u32) -> [[f32; 2]; 4] {
 
 /// Convenience wrapper: resolves the tile index for `(kind, face)` and returns
 /// the four quad UV corners.  This is what your mesh builder calls per face.
-///
-/// Example (inside greedy_meshing.rs):
-/// ```rust,ignore
-/// let uvs: [[f32; 2]; 4] = quad_uvs_for(block_kind, BlockFace::East);
-/// uv_buffer.extend_from_slice(&uvs);
-/// ```
 pub fn quad_uvs_for(kind: BlockKind, face: BlockFace) -> [[f32; 2]; 4] {
     quad_uvs_for_tile(tile_index_for(kind, face))
 }
@@ -176,9 +180,6 @@ pub fn quad_uvs_for(kind: BlockKind, face: BlockFace) -> [[f32; 2]; 4] {
 
 /// Stitches all procedural tile buffers into a single RGBA [`Image`] with
 /// nearest-neighbour filtering.
-///
-/// The stitching loop maps each tile's local pixel coordinates into atlas
-/// pixel coordinates using the tile index, column, and row.
 pub fn build_atlas_image() -> Image {
     let tiles = generate_all_tiles();
     let mut rgba = vec![0u8; (ATLAS_W * ATLAS_H * 4) as usize];
@@ -186,8 +187,8 @@ pub fn build_atlas_image() -> Image {
     for (idx, tile) in tiles.iter().enumerate() {
         let col = (idx as u32) % ATLAS_COLS;
         let row = (idx as u32) / ATLAS_COLS;
-        let ox = col * TILE_SIZE; // pixel x-offset of this tile in the atlas
-        let oy = row * TILE_SIZE; // pixel y-offset
+        let ox = col * TILE_SIZE;
+        let oy = row * TILE_SIZE;
 
         for ty in 0..TILE_SIZE {
             for tx in 0..TILE_SIZE {
@@ -198,9 +199,6 @@ pub fn build_atlas_image() -> Image {
         }
     }
 
-    // Build Bevy Image with nearest-neighbour sampler for pixel-art sharpness.
-    // RenderAssetUsages::RENDER_WORLD means the texture lives only on the GPU.
-    // Change to MAIN_WORLD | RENDER_WORLD if you need CPU readback.
     let mut image = Image::new(
         Extent3d {
             width: ATLAS_W,
@@ -212,32 +210,15 @@ pub fn build_atlas_image() -> Image {
         TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::RENDER_WORLD,
     );
-
-    // ⚠ Nearest filtering is what makes block edges crisp, not blurry.
-    //   Default is linear; this override is mandatory for pixel art.
     image.sampler = ImageSampler::nearest();
     image
 }
 
 // ── Bevy resource ─────────────────────────────────────────────────────────────
 
-/// Holds the pre-built [`StandardMaterial`] handles used by all chunk meshes.
-///
-/// Water requires a separate material because it uses `AlphaMode::Blend`;
-/// mixing opaque and blended geometry in one material causes Z-sorting issues.
-///
-/// Obtain this resource in your chunk-spawning system:
-/// ```rust,ignore
-/// fn spawn_chunk(atlas: Res<BlockAtlas>, mut meshes: ResMut<Assets<Mesh>>, …) {
-///     commands.spawn(MaterialMeshBundle {
-///         material: atlas.opaque.clone(),
-///         …
-///     });
-/// }
-/// ```
 #[derive(Resource)]
 pub struct BlockAtlas {
-    /// Material for stone, dirt, grass, sand, wood, leaves, bedrock.
+    /// Material for stone, dirt, grass, sand, wood, leaves, bedrock, ores.
     pub opaque: Handle<StandardMaterial>,
     /// Material for water (semi-transparent, alpha blended).
     pub translucent: Handle<StandardMaterial>,
@@ -245,17 +226,13 @@ pub struct BlockAtlas {
 
 // ── Startup system ────────────────────────────────────────────────────────────
 
-/// Bevy startup system — runs once before the first frame.
-/// Generates the atlas, uploads it to the GPU, and inserts [`BlockAtlas`].
 pub fn setup_block_atlas(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Build the atlas texture and upload it to the asset server.
     let tex = images.add(build_atlas_image());
 
-    // Opaque material: no metallic sheen, full roughness, no specular.
     let opaque = materials.add(StandardMaterial {
         base_color_texture: Some(tex.clone()),
         metallic: 0.0,
@@ -265,8 +242,6 @@ pub fn setup_block_atlas(
         ..Default::default()
     });
 
-    // Translucent material: identical except AlphaMode::Blend respects the
-    // alpha=200 channel baked into the water tile pixels.
     let translucent = materials.add(StandardMaterial {
         base_color_texture: Some(tex),
         metallic: 0.0,
@@ -284,19 +259,10 @@ pub fn setup_block_atlas(
 
 // ── Plugin ────────────────────────────────────────────────────────────────────
 
-/// Add this plugin in `main.rs` (or your top-level app builder) to wire
-/// everything up automatically:
-/// ```rust,ignore
-/// App::new()
-///     .add_plugins(DefaultPlugins)
-///     .add_plugins(BlockAtlasPlugin)  // ← add this
-///     …
-/// ```
 pub struct BlockAtlasPlugin;
 
 impl Plugin for BlockAtlasPlugin {
     fn build(&self, app: &mut App) {
-        // Runs before chunk-spawning systems so the resource is ready in time.
         app.add_systems(Startup, setup_block_atlas);
     }
 }

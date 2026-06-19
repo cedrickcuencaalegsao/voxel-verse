@@ -46,11 +46,16 @@ impl BlockRegistry {
             BlockKind::Wood,
             BlockKind::Leaves,
             BlockKind::Bedrock,
+            // ── ores ──────────────────────────────────
+            BlockKind::CoalOre,
+            BlockKind::IronOre,
+            BlockKind::DiamondOre,
         ] {
             let (mesh, mat) = reg.create_block_assets(*kind, meshes, materials, &atlas_handle);
             reg.meshes.insert(*kind, mesh);
             reg.materials.insert(*kind, mat);
         }
+
         reg
     }
 
@@ -61,8 +66,7 @@ impl BlockRegistry {
         materials: &mut Assets<StandardMaterial>,
         texture: &Handle<Image>,
     ) -> (Handle<Mesh>, Handle<StandardMaterial>) {
-        let mesh = create_unit_cube_mesh();
-        let mesh_handle = meshes.add(mesh);
+        let mesh_handle = meshes.add(create_unit_cube_mesh());
 
         let color = match kind {
             BlockKind::Stone => Color::srgb(0.5, 0.5, 0.5),
@@ -73,7 +77,12 @@ impl BlockRegistry {
             BlockKind::Wood => Color::srgb(0.4, 0.2, 0.0),
             BlockKind::Leaves => Color::srgb(0.1, 0.8, 0.1),
             BlockKind::Bedrock => Color::srgb(0.1, 0.1, 0.1),
-            _ => Color::srgb(1.0, 1.0, 1.0),
+            // ── ores: stone base tinted with the ore colour ──
+            BlockKind::CoalOre => Color::srgb(0.25, 0.25, 0.25), // dark grey
+            BlockKind::IronOre => Color::srgb(0.72, 0.55, 0.40), // rusty tan
+            BlockKind::DiamondOre => Color::srgb(0.3, 0.85, 0.9), // cyan sparkle
+            // Air is never rendered, but the wildcard keeps exhaustiveness
+            BlockKind::Air => Color::srgba(0.0, 0.0, 0.0, 0.0),
         };
 
         let mat = materials.add(StandardMaterial {

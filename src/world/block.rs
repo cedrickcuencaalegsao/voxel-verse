@@ -13,11 +13,14 @@ pub enum BlockKind {
     Wood,
     Leaves,
     Bedrock,
+    // ── ores ─────────────────────────────────────────
+    CoalOre,    // 9
+    IronOre,    // 10
+    DiamondOre, // 11
 }
 
 impl TryFrom<u8> for BlockKind {
     type Error = ();
-
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(Self::Air),
@@ -29,6 +32,9 @@ impl TryFrom<u8> for BlockKind {
             6 => Ok(Self::Wood),
             7 => Ok(Self::Leaves),
             8 => Ok(Self::Bedrock),
+            9 => Ok(Self::CoalOre),
+            10 => Ok(Self::IronOre),
+            11 => Ok(Self::DiamondOre),
             _ => Err(()),
         }
     }
@@ -59,6 +65,9 @@ impl Block {
                 | BlockKind::Wood
                 | BlockKind::Leaves
                 | BlockKind::Bedrock
+                | BlockKind::CoalOre
+                | BlockKind::IronOre
+                | BlockKind::DiamondOre
         )
     }
 
