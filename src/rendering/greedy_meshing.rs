@@ -7,7 +7,7 @@ pub struct Quad {
     pub position: [f32; 3],
     pub size: [f32; 2],
     pub normal: [f32; 3],
-    pub uv: [f32; 4],
+    // pub uv: [f32; 4],
     pub block_kind: BlockKind,
 }
 
@@ -31,7 +31,7 @@ pub fn generate_chunk_quads(chunk: &Chunk) -> Vec<Quad> {
                             position: [x as f32, y as f32, z as f32],
                             size: [1.0, 1.0],
                             normal,
-                            uv: [0.0, 0.0, 1.0, 1.0],
+                            // uv: [0.0, 0.0, 1.0, 1.0],
                             block_kind: block.kind,
                         });
                     }

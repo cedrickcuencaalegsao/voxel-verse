@@ -1,5 +1,5 @@
-use crate::rendering::atlas::{BlockAtlas, BlockFace, quad_uvs_for};
 use crate::rendering::greedy_meshing::generate_chunk_quads;
+use crate::rendering::materials::{BlockAtlas, BlockFace, quad_uvs_for};
 use crate::world::chunk::Chunk;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
