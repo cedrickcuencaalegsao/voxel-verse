@@ -89,7 +89,7 @@ fn spawn_player(
             Velocity(Vec3::ZERO),
             Grounded(true),
             AirborneTimer(0.0),
-            Crouching(false), // Added the Crouching state component
+            Crouching(false),
         ))
         .with_children(|p| {
             p.spawn((PlayerBody, Transform::IDENTITY, Visibility::default()))
@@ -97,7 +97,7 @@ fn spawn_player(
                     // ── TORSO & LOWER BODY SKELETON ───────────────────────────
                     body.spawn((
                         Torso,
-                        Transform::from_xyz(0.0, 0.75, 0.0),
+                        Transform::from_xyz(0.0, 0.92, 0.0), // Spawns torso at correct standing height
                         Visibility::default(),
                     ))
                     .with_children(|torso| {

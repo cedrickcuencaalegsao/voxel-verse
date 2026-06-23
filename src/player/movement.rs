@@ -331,16 +331,15 @@ pub fn animate_limbs(
     let phase = t * frequency;
 
     if is_grounded_or_transitioning {
-        // Minecraft height drop (slight hinge down)
-        let torso_base_y = if is_crouching { 0.58 } else { 0.75 };
-        let crouch_lean = if is_crouching { 0.45 } else { 0.0 }; // Sharp forward tilt ("/")
+        // Corrected heights to perfectly align standing leg length
+        let torso_base_y = if is_crouching { 0.76 } else { 0.92 };
+        let crouch_lean = if is_crouching { 0.45 } else { 0.0 };
 
         let forward_lean = 0.10 * anim_weight + 0.22 * sprint_blend + crouch_lean;
         let torso_pitch = -forward_lean - 0.02 * anim_weight * phase.sin() * 0.5;
-        let torso_yaw = (0.03 * anim_weight + 0.05 * sprint_blend) * phase.sin();
-        let torso_roll = -(0.02 * anim_weight + 0.03 * sprint_blend)
-            * (phase + std::f32::consts::FRAC_PI_2).sin();
-        let torso_bob = (-0.025 * anim_weight - 0.05 * sprint_blend) * (2.0 * phase).cos().abs();
+        let torso_yaw = 0.03 * anim_weight * phase.sin();
+        let torso_roll = -0.02 * anim_weight * (phase + std::f32::consts::FRAC_PI_2).sin();
+        let torso_bob = -0.025 * anim_weight * (2.0 * phase).cos().abs();
 
         if let Some(mut tf) = torso.iter_mut().next() {
             tf.translation.y = torso_base_y + torso_bob;
@@ -348,7 +347,6 @@ pub fn animate_limbs(
         }
 
         if let Some(mut tf) = head.iter_mut().next() {
-            // Cancel torso tilt entirely so the head looks straight forward
             let head_pitch = forward_lean + (0.02 * anim_weight) * (2.0 * phase).sin();
             let head_yaw = -torso_yaw * 0.5;
             let head_roll = -torso_roll * 0.4;
@@ -364,7 +362,6 @@ pub fn animate_limbs(
         let knee_swing_peak = (0.75 * anim_weight + 0.65 * sprint_blend) * swing_mult;
         let knee_toe_off = (0.50 * anim_weight + 0.45 * sprint_blend) * swing_mult;
 
-        // Minecraft legs are rigid/straight when crouching
         let knee_stance_min = if is_crouching { 0.10 } else { 0.05 };
 
         let ankle_dorsiflex = (0.20 * anim_weight + 0.15 * sprint_blend) * swing_mult;
@@ -376,7 +373,6 @@ pub fn animate_limbs(
             } else {
                 -s * hip_back
             };
-            // Counteract the torso tilt to point the thighs straight down / slightly backward ("\")
             if is_crouching {
                 base_pitch + 0.42
             } else {
@@ -399,7 +395,6 @@ pub fn animate_limbs(
             let in_toe_off = (-s).clamp(0.0, 1.0) * c.max(0.0);
             let pull_up = in_toe_off * ankle_dorsiflex;
 
-            // Straight legs do not need ankle offset to stay flat
             let crouch_ankle_offset = 0.0;
             stretch + pull_up + crouch_ankle_offset
         };
@@ -455,7 +450,7 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_rotation_x(forearm_base + ra_s * forearm_sweep);
         }
     } else {
-        // Fall/Jump animations
+        // Fall/Jump animations (Updated to remain consistent with the standing height 0.92)
         let vertical_speed = velocity.0.y;
         let leap_factor = (vertical_speed / settings.jump_velocity).clamp(-1.0, 1.0);
 
@@ -463,7 +458,7 @@ pub fn animate_limbs(
             let blend = leap_factor;
 
             if let Some(mut tf) = torso.iter_mut().next() {
-                tf.translation.y = 0.75;
+                tf.translation.y = 0.92; // Match standing height
                 tf.rotation = Quat::from_rotation_x(-0.08 * blend);
             }
             if let Some(mut tf) = head.iter_mut().next() {
@@ -503,7 +498,7 @@ pub fn animate_limbs(
             let blend = -leap_factor;
 
             if let Some(mut tf) = torso.iter_mut().next() {
-                tf.translation.y = 0.75;
+                tf.translation.y = 0.92; // Match standing height
                 tf.rotation = Quat::from_rotation_x(0.18 * blend);
             }
             if let Some(mut tf) = head.iter_mut().next() {
