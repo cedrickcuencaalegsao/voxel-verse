@@ -28,8 +28,8 @@ impl Default for PlayerCamera {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
-    ThirdPersonBack,  // default Minecraft-style view, camera behind the player
-    ThirdPersonFront, // "selfie" view, camera in front looking back
+    ThirdPersonBack,
+    ThirdPersonFront,
     FirstPerson,
 }
 
@@ -45,9 +45,7 @@ pub fn grab_cursor(mut cursor_options: Query<&mut CursorOptions, With<PrimaryWin
     }
 }
 
-/// Automatically re-grabs the cursor if the player clicks the window.
-/// This prevents the cursor lock from being permanently lost when entering fullscreen
-/// or when alt-tabbing.
+/// Re-grabs cursor when player clicks the window.
 pub fn handle_cursor_auto_grab(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
@@ -62,7 +60,7 @@ pub fn handle_cursor_auto_grab(
     }
 }
 
-/// Escape frees the cursor; pressing it again re-locks it.
+/// Escape frees the cursor; pressing again re-locks it.
 pub fn toggle_cursor_grab(
     keys: Res<ButtonInput<KeyCode>>,
     mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
@@ -83,7 +81,7 @@ pub fn toggle_cursor_grab(
     }
 }
 
-/// Tab cycles: behind player -> in front of player -> first person -> behind player.
+/// Tab cycles: behind → front → first person → behind.
 pub fn cycle_camera_view(
     keys: Res<ButtonInput<KeyCode>>,
     mut camera_query: Query<&mut PlayerCamera>,
