@@ -118,12 +118,6 @@ fn spawn_player(
                                     MeshMaterial3d(skin.clone()),
                                     Transform::from_xyz(0.0, 0.19, 0.0), // was 0.25; centers the smaller head
                                 ));
-                                // head_joint.spawn((
-                                //     Mesh3d(hair_mesh.clone()),
-                                //     MeshMaterial3d(hair.clone()),
-                                //     Transform::from_xyz(0.0, 0.44, 0.00), // was 0.575; sits on top of smaller head
-                                // ));
-                                //
                                 // top
                                 head_joint.spawn((
                                     Mesh3d(hair_mesh.clone()),
