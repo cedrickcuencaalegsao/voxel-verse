@@ -5,6 +5,8 @@ use bevy::{
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
 
+use super::movement::{Head, Torso};
+
 #[derive(Component)]
 pub struct PlayerCamera {
     pub distance: f32,
@@ -104,7 +106,16 @@ pub fn player_look(
     cursor_options: Query<&CursorOptions, With<PrimaryWindow>>,
     mut player_query: Query<&mut Transform, With<Player>>,
     mut camera_query: Query<(&mut Transform, &mut PlayerCamera), Without<Player>>,
-    mut body_query: Query<&mut Visibility, With<PlayerBody>>,
+    torso_query: Query<&Transform, (With<Torso>, Without<Player>, Without<PlayerCamera>)>,
+    head_joint_query: Query<
+        &Transform,
+        (
+            With<Head>,
+            Without<Player>,
+            Without<PlayerCamera>,
+            Without<Torso>,
+        ),
+    >,
 ) {
     let Ok(mut player_transform) = player_query.single_mut() else {
         return;
@@ -126,7 +137,16 @@ pub fn player_look(
         }
     }
 
-    let target = player_transform.translation + Vec3::Y * camera.target_height;
+    // Determine target height dynamically from relative torso/head heights (for natural bobs/crouching)
+    let mut eye_height = camera.target_height;
+    if let Some(torso_tf) = torso_query.iter().next() {
+        if let Some(head_tf) = head_joint_query.iter().next() {
+            // Torso root height + local Head height + center-of-head visual height offset
+            eye_height = torso_tf.translation.y + head_tf.translation.y + 0.19;
+        }
+    }
+
+    let target = player_transform.translation + Vec3::Y * eye_height;
     let look_rotation = player_transform.rotation * Quat::from_rotation_x(camera.pitch);
 
     match camera.mode {
@@ -144,13 +164,5 @@ pub fn player_look(
             camera_transform.translation = target;
             camera_transform.rotation = look_rotation;
         }
-    }
-
-    if let Ok(mut visibility) = body_query.single_mut() {
-        *visibility = if camera.mode == CameraMode::FirstPerson {
-            Visibility::Hidden
-        } else {
-            Visibility::Visible
-        };
     }
 }

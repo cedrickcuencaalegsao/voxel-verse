@@ -1,4 +1,5 @@
 use crate::utils::constants::{GRAVITY, JUMP_VELOCITY, PLAYER_SPEED};
+use crate::world::world_manager::Player;
 use crate::world::world_manager::WorldManager;
 use bevy::prelude::*;
 
@@ -185,8 +186,6 @@ pub fn player_movement(
     }
 }
 
-use crate::world::world_manager::Player;
-
 pub fn animate_limbs(
     time: Res<Time>,
     settings: Res<MovementSettings>,
@@ -331,7 +330,6 @@ pub fn animate_limbs(
     let phase = t * frequency;
 
     if is_grounded_or_transitioning {
-        // Corrected heights to perfectly align standing leg length
         let torso_base_y = if is_crouching { 0.76 } else { 0.92 };
         let crouch_lean = if is_crouching { 0.45 } else { 0.0 };
 
@@ -450,7 +448,6 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_rotation_x(forearm_base + ra_s * forearm_sweep);
         }
     } else {
-        // Fall/Jump animations (Updated to remain consistent with the standing height 0.92)
         let vertical_speed = velocity.0.y;
         let leap_factor = (vertical_speed / settings.jump_velocity).clamp(-1.0, 1.0);
 
@@ -458,7 +455,7 @@ pub fn animate_limbs(
             let blend = leap_factor;
 
             if let Some(mut tf) = torso.iter_mut().next() {
-                tf.translation.y = 0.92; // Match standing height
+                tf.translation.y = 0.92;
                 tf.rotation = Quat::from_rotation_x(-0.08 * blend);
             }
             if let Some(mut tf) = head.iter_mut().next() {
@@ -498,7 +495,7 @@ pub fn animate_limbs(
             let blend = -leap_factor;
 
             if let Some(mut tf) = torso.iter_mut().next() {
-                tf.translation.y = 0.92; // Match standing height
+                tf.translation.y = 0.92;
                 tf.rotation = Quat::from_rotation_x(0.18 * blend);
             }
             if let Some(mut tf) = head.iter_mut().next() {
