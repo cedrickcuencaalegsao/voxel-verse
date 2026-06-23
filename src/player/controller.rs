@@ -4,9 +4,9 @@ use super::{
         player_look, toggle_cursor_grab,
     },
     movement::{
-        AirborneTimer, Grounded, Head, LeftFoot, LeftForeArm, LeftHand, LeftShin, LeftThigh,
-        LeftUpperArm, MovementSettings, RightFoot, RightForeArm, RightHand, RightShin, RightThigh,
-        RightUpperArm, Torso, Velocity, animate_limbs, player_movement,
+        AirborneTimer, Crouching, Grounded, Head, LeftFoot, LeftForeArm, LeftHand, LeftShin,
+        LeftThigh, LeftUpperArm, MovementSettings, RightFoot, RightForeArm, RightHand, RightShin,
+        RightThigh, RightUpperArm, Torso, Velocity, animate_limbs, player_movement,
     },
 };
 use crate::world::world_manager::{Player, WorldManager};
@@ -88,7 +88,8 @@ fn spawn_player(
             Visibility::default(),
             Velocity(Vec3::ZERO),
             Grounded(true),
-            AirborneTimer(0.0), // Added tracking timer here
+            AirborneTimer(0.0),
+            Crouching(false), // Added the Crouching state component
         ))
         .with_children(|p| {
             p.spawn((PlayerBody, Transform::IDENTITY, Visibility::default()))

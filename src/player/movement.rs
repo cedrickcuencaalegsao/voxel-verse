@@ -40,6 +40,7 @@ pub struct RightFoot;
 pub struct MovementSettings {
     pub speed: f32,
     pub sprint_speed: f32,
+    pub crouch_speed: f32,
     pub jump_velocity: f32,
     pub gravity: f32,
 }
@@ -49,6 +50,7 @@ impl Default for MovementSettings {
         Self {
             speed: PLAYER_SPEED,
             sprint_speed: PLAYER_SPEED * 1.7,
+            crouch_speed: PLAYER_SPEED * 0.55,
             jump_velocity: JUMP_VELOCITY,
             gravity: GRAVITY,
         }
@@ -61,9 +63,11 @@ pub struct Velocity(pub Vec3);
 #[derive(Component)]
 pub struct Grounded(pub bool);
 
-// Tracks how long the player has been airborne
 #[derive(Component)]
 pub struct AirborneTimer(pub f32);
+
+#[derive(Component)]
+pub struct Crouching(pub bool);
 
 fn block_ground_y(world: &WorldManager, x: f32, z: f32) -> f32 {
     let bx = x.floor() as f64;
@@ -84,11 +88,14 @@ pub fn player_movement(
         &mut Transform,
         &mut Grounded,
         &mut AirborneTimer,
+        &mut Crouching,
     )>,
     settings: Res<MovementSettings>,
     world: Res<WorldManager>,
 ) {
-    for (mut velocity, mut transform, mut grounded, mut airborne_timer) in query.iter_mut() {
+    for (mut velocity, mut transform, mut grounded, mut airborne_timer, mut crouching) in
+        query.iter_mut()
+    {
         let dt = time.delta_secs();
 
         let mut direction = Vec3::ZERO;
@@ -112,8 +119,14 @@ pub fn player_movement(
             direction = direction.normalize();
         }
 
+        let has_ctrl = keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight]);
+        crouching.0 = has_ctrl && grounded.0;
+
         let has_shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
-        let current_speed = if is_moving_forward && has_shift {
+
+        let current_speed = if crouching.0 {
+            settings.crouch_speed
+        } else if is_moving_forward && has_shift {
             settings.sprint_speed
         } else {
             settings.speed
@@ -149,8 +162,8 @@ pub fn player_movement(
         if grounded.0 && keys.just_pressed(KeyCode::Space) {
             velocity.0.y = settings.jump_velocity;
             grounded.0 = false;
-            // Bypass the 2.5s walk animation delay on intentional jump
             airborne_timer.0 = 2.5;
+            crouching.0 = false;
         }
         velocity.0.y -= settings.gravity * dt;
         transform.translation.y += velocity.0.y * dt;
@@ -177,7 +190,7 @@ use crate::world::world_manager::Player;
 pub fn animate_limbs(
     time: Res<Time>,
     settings: Res<MovementSettings>,
-    player_query: Query<(&Velocity, &Grounded, &AirborneTimer), With<Player>>,
+    player_query: Query<(&Velocity, &Grounded, &AirborneTimer, &Crouching), With<Player>>,
     mut torso: Query<&mut Transform, With<Torso>>,
     mut head: Query<&mut Transform, (With<Head>, Without<Torso>)>,
     mut l_upper_arm: Query<&mut Transform, (With<LeftUpperArm>, Without<Torso>, Without<Head>)>,
@@ -299,24 +312,30 @@ pub fn animate_limbs(
         ),
     >,
 ) {
-    let Some((velocity, grounded, airborne_timer)) = player_query.iter().next() else {
+    let Some((velocity, grounded, airborne_timer, crouching)) = player_query.iter().next() else {
         return;
     };
 
     let t = time.elapsed_secs();
 
     let is_grounded_or_transitioning = grounded.0 || airborne_timer.0 < 2.5;
+    let is_crouching = crouching.0 && is_grounded_or_transitioning;
 
     let horizontal_speed = Vec3::new(velocity.0.x, 0.0, velocity.0.z).length();
     let speed_ratio = (horizontal_speed / settings.speed).clamp(0.0, 2.0);
     let anim_weight = speed_ratio.min(1.0);
     let sprint_blend = (speed_ratio - 1.0).max(0.0).min(1.0);
 
-    let frequency = 8.0 + 5.5 * sprint_blend;
+    let base_frequency = if is_crouching { 6.5 } else { 8.0 };
+    let frequency = base_frequency + 5.5 * sprint_blend;
     let phase = t * frequency;
 
     if is_grounded_or_transitioning {
-        let forward_lean = 0.10 * anim_weight + 0.22 * sprint_blend;
+        // Minecraft height drop (slight hinge down)
+        let torso_base_y = if is_crouching { 0.58 } else { 0.75 };
+        let crouch_lean = if is_crouching { 0.45 } else { 0.0 }; // Sharp forward tilt ("/")
+
+        let forward_lean = 0.10 * anim_weight + 0.22 * sprint_blend + crouch_lean;
         let torso_pitch = -forward_lean - 0.02 * anim_weight * phase.sin() * 0.5;
         let torso_yaw = (0.03 * anim_weight + 0.05 * sprint_blend) * phase.sin();
         let torso_roll = -(0.02 * anim_weight + 0.03 * sprint_blend)
@@ -324,33 +343,44 @@ pub fn animate_limbs(
         let torso_bob = (-0.025 * anim_weight - 0.05 * sprint_blend) * (2.0 * phase).cos().abs();
 
         if let Some(mut tf) = torso.iter_mut().next() {
-            tf.translation.y = 0.75 + torso_bob;
+            tf.translation.y = torso_base_y + torso_bob;
             tf.rotation = Quat::from_euler(EulerRot::YXZ, torso_yaw, torso_pitch, torso_roll);
         }
 
         if let Some(mut tf) = head.iter_mut().next() {
-            let head_pitch = forward_lean * 0.7 + (0.02 * anim_weight) * (2.0 * phase).sin();
+            // Cancel torso tilt entirely so the head looks straight forward
+            let head_pitch = forward_lean + (0.02 * anim_weight) * (2.0 * phase).sin();
             let head_yaw = -torso_yaw * 0.5;
             let head_roll = -torso_roll * 0.4;
             tf.rotation = Quat::from_euler(EulerRot::YXZ, head_yaw, head_pitch, head_roll);
         }
 
-        let hip_fwd = 0.48 * anim_weight + 0.52 * sprint_blend;
-        let hip_back = 0.32 * anim_weight + 0.42 * sprint_blend;
+        let swing_mult = if is_crouching { 0.75 } else { 1.0 };
+
+        let hip_fwd = (0.48 * anim_weight + 0.52 * sprint_blend) * swing_mult;
+        let hip_back = (0.32 * anim_weight + 0.42 * sprint_blend) * swing_mult;
         let splay = 0.03 * anim_weight + 0.05 * sprint_blend;
 
-        let knee_swing_peak = 0.75 * anim_weight + 0.65 * sprint_blend;
-        let knee_toe_off = 0.50 * anim_weight + 0.45 * sprint_blend;
-        let knee_stance_min = 0.05_f32;
+        let knee_swing_peak = (0.75 * anim_weight + 0.65 * sprint_blend) * swing_mult;
+        let knee_toe_off = (0.50 * anim_weight + 0.45 * sprint_blend) * swing_mult;
 
-        let ankle_dorsiflex = 0.20 * anim_weight + 0.15 * sprint_blend;
-        let ankle_plantarflex = -0.35 * anim_weight - 0.30 * sprint_blend;
+        // Minecraft legs are rigid/straight when crouching
+        let knee_stance_min = if is_crouching { 0.10 } else { 0.05 };
+
+        let ankle_dorsiflex = (0.20 * anim_weight + 0.15 * sprint_blend) * swing_mult;
+        let ankle_plantarflex = (-0.35 * anim_weight - 0.30 * sprint_blend) * swing_mult;
 
         let thigh_pitch = |s: f32| -> f32 {
-            if s >= 0.0 {
+            let base_pitch = if s >= 0.0 {
                 -s * hip_fwd
             } else {
                 -s * hip_back
+            };
+            // Counteract the torso tilt to point the thighs straight down / slightly backward ("\")
+            if is_crouching {
+                base_pitch + 0.42
+            } else {
+                base_pitch
             }
         };
 
@@ -369,7 +399,9 @@ pub fn animate_limbs(
             let in_toe_off = (-s).clamp(0.0, 1.0) * c.max(0.0);
             let pull_up = in_toe_off * ankle_dorsiflex;
 
-            stretch + pull_up
+            // Straight legs do not need ankle offset to stay flat
+            let crouch_ankle_offset = 0.0;
+            stretch + pull_up + crouch_ankle_offset
         };
 
         let ls = phase.sin();
@@ -398,14 +430,12 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_rotation_x(ankle_pitch(rs, rc));
         }
 
-        let upper_hang = 0.08_f32;
-        let forearm_hang = 0.18_f32;
+        let upper_hang = if is_crouching { 0.12 } else { 0.08 };
+        let forearm_hang = if is_crouching { 0.28 } else { 0.18 };
 
         let forearm_base = forearm_hang + 0.15 * anim_weight + 0.25 * sprint_blend;
-
-        let swing_range = 0.18 * anim_weight + 0.42 * sprint_blend;
-
-        let forearm_sweep = 0.35 * anim_weight + 0.70 * sprint_blend;
+        let swing_range = (0.18 * anim_weight + 0.42 * sprint_blend) * swing_mult;
+        let forearm_sweep = (0.35 * anim_weight + 0.70 * sprint_blend) * swing_mult;
 
         let la_s = -phase.sin();
         if let Some(mut tf) = l_upper_arm.iter_mut().next() {
@@ -425,6 +455,7 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_rotation_x(forearm_base + ra_s * forearm_sweep);
         }
     } else {
+        // Fall/Jump animations
         let vertical_speed = velocity.0.y;
         let leap_factor = (vertical_speed / settings.jump_velocity).clamp(-1.0, 1.0);
 
