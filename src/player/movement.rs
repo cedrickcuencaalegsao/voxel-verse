@@ -299,128 +299,223 @@ pub fn animate_limbs(
     let anim_weight = speed_ratio.min(1.0);
     let sprint_blend = (speed_ratio - 1.0).max(0.0).min(1.0);
 
-    // Speed up cycle frequency when sprinting
+    // Dynamic stride speed
     let frequency = 6.5 + 5.5 * sprint_blend;
     let phase = t * frequency;
 
     if is_grounded {
-        // ── 1. TORSO (Heavy Weight Sway & Elastic Bobbing) ───────────────────
-        let torso_pitch = 0.05 * anim_weight + 0.20 * sprint_blend;
-        let torso_yaw = (0.07 * anim_weight + 0.12 * sprint_blend) * phase.sin();
-        let torso_roll = -(0.04 * anim_weight + 0.08 * sprint_blend)
+        // ── 1. TORSO (Forward Lean + Reduced Sway & Bobbing) ─────────────────
+        let forward_lean = 0.10 * anim_weight + 0.22 * sprint_blend;
+        // Negative pitch = forward lean in Bevy (+X rotation tilts the top backward).
+        let torso_pitch = -forward_lean - 0.02 * anim_weight * phase.sin() * 0.5;
+        let torso_yaw = (0.03 * anim_weight + 0.05 * sprint_blend) * phase.sin();
+        let torso_roll = -(0.02 * anim_weight + 0.03 * sprint_blend)
             * (phase + std::f32::consts::FRAC_PI_2).sin();
-        let torso_bob = (-0.05 * anim_weight - 0.10 * sprint_blend) * (2.0 * phase).cos().abs();
+        let torso_bob = (-0.025 * anim_weight - 0.05 * sprint_blend) * (2.0 * phase).cos().abs();
 
         if let Some(mut tf) = torso.iter_mut().next() {
             tf.translation.y = 0.75 + torso_bob;
             tf.rotation = Quat::from_euler(EulerRot::YXZ, torso_yaw, torso_pitch, torso_roll);
         }
 
-        // ── 2. HEAD (Secondary Motion, lag & stability tilt) ─────────────────
+        // ── 2. HEAD (Secondary Motion lag) ───────────────────────────────────
         if let Some(mut tf) = head.iter_mut().next() {
-            let head_pitch = -torso_pitch * 0.4 + 0.04 * (2.0 * phase).sin() * anim_weight;
-            let head_yaw = -torso_yaw * 0.6;
-            let head_roll = -torso_roll * 0.5;
+            // Positive pitch here counteracts the torso's forward lean, keeping the head upright.
+            let head_pitch = forward_lean * 0.7 + (0.02 * anim_weight) * (2.0 * phase).sin();
+            let head_yaw = -torso_yaw * 0.5;
+            let head_roll = -torso_roll * 0.4;
             tf.rotation = Quat::from_euler(EulerRot::YXZ, head_yaw, head_pitch, head_roll);
         }
 
-        // ── 3. LEGS (Trailing Knee Physics & Dynamic Splay) ──────────────────
-        let leg_swing = 0.40 * anim_weight + 0.35 * sprint_blend;
-        let knee_bend_max = 0.50 * anim_weight + 0.45 * sprint_blend;
+        // ── 3. LEGS (Biomechanically Accurate Running Gait) ───────────────────
+        //
+        // Human running gait — per-leg phase drives three joints together:
+        //
+        //   Phase angle relative to leg (left = `phase`, right = `phase + π`):
+        //
+        //   sin → +1  : leg at peak FORWARD swing
+        //               · Thigh pitched max forward
+        //               · Knee bent high (foot clearing ground)
+        //               · Foot dorsiflexed (toes up, ready to strike)
+        //
+        //   sin →  0, cos → -1 : FOOT STRIKE / early stance
+        //               · Thigh near neutral, leg extending downward
+        //               · Knee softly bent to absorb impact
+        //               · Foot neutral / slight plantarflexion at contact
+        //
+        //   sin → -1  : leg at full EXTENSION behind body (push-off)
+        //               · Thigh pitched max backward (hip extension)
+        //               · Knee nearly straight — leg is a rigid lever
+        //               · Ankle plantarflexes hard (toes push off ground)
+        //
+        //   sin →  0, cos → +1 : TOE-OFF / start of swing
+        //               · Knee re-bends rapidly to clear foot from ground
+        //               · Foot flicks up (rebound dorsiflex)
+        //               · Thigh begins swinging forward again
 
-        let left_thigh_pitch = -phase.sin() * leg_swing;
-        let right_thigh_pitch = phase.sin() * leg_swing;
-
-        // Slight outward leg splay for dynamic balance
+        let hip_fwd = 0.48 * anim_weight + 0.52 * sprint_blend; // forward hip pitch
+        let hip_back = 0.32 * anim_weight + 0.42 * sprint_blend; // backward hip extension
         let splay = 0.03 * anim_weight + 0.05 * sprint_blend;
 
-        if let Some(mut tf) = l_thigh.iter_mut().next() {
-            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, left_thigh_pitch, splay);
-        }
-        if let Some(mut tf) = r_thigh.iter_mut().next() {
-            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, right_thigh_pitch, -splay);
-        }
+        // Knee ROM: high lift during swing, near-zero at stance, re-bend at toe-off
+        let knee_swing_peak = 0.75 * anim_weight + 0.65 * sprint_blend;
+        let knee_toe_off = 0.50 * anim_weight + 0.45 * sprint_blend;
+        let knee_stance_min = 0.05_f32; // never fully locked straight
 
-        // Knees bend when sweeping forward (lifting the foot to prevent dragging)
-        let left_swing_speed = -phase.cos();
-        let right_swing_speed = phase.cos();
+        // Ankle ROM
+        let ankle_dorsiflex = 0.20 * anim_weight + 0.15 * sprint_blend; // foot up on swing
+        let ankle_plantarflex = -0.35 * anim_weight - 0.30 * sprint_blend; // foot down on push-off
 
-        if let Some(mut tf) = l_shin.iter_mut().next() {
-            let bend = if left_swing_speed > 0.0 {
-                left_swing_speed * knee_bend_max
+        // ── Per-leg helper closures ───────────────────────────────────────────
+
+        // Thigh pitch: asymmetric — more forward ROM than backward (natural gait)
+        let thigh_pitch = |s: f32| -> f32 {
+            if s >= 0.0 {
+                -s * hip_fwd // forward swing
             } else {
-                0.02
-            };
-            tf.rotation = Quat::from_rotation_x(bend);
+                -s * hip_back // hip extension (pushes backward less than it swings forward)
+            }
+        };
+
+        // Knee bend: peaks during swing, near-zero at stance, spikes at toe-off.
+        // `s` = sin of leg phase, `c` = cos of leg phase
+        //   · Swing phase (s > 0, c going toward -1): c.max(0) drives the lift.
+        //   · Toe-off (s transitioning from -1 back toward 0, c near 0 going positive):
+        //     we detect this as s ∈ (-1, 0) and c < 0.3, adding an extra burst.
+        let knee_bend = |s: f32, c: f32| -> f32 {
+            // Primary lift: knee bends when leg swings FORWARD (s > 0).
+            // Use -c.max(0) because cos is -1 at peak forward swing (s=+1),
+            // and near +1 when the leg is behind — so we flip it.
+            let swing = (-c).max(0.0) * knee_swing_peak;
+
+            // Toe-off burst: leg just left the ground (s crossing 0 from negative,
+            // c crossing from +1 toward 0). Knee snaps up to clear the foot.
+            let in_toe_off_zone = ((-s).clamp(0.0, 1.0)) * ((1.0 - c.abs()).max(0.0));
+            let toe_off = in_toe_off_zone * knee_toe_off;
+
+            // At stance (s near 0, c near -1): both terms are ~0 → near-straight leg.
+            (swing + toe_off).max(knee_stance_min)
+        };
+
+        // Ankle pitch — human gait:
+        //
+        //   s =  1  (front reach): PLANTARFLEX — foot pointed/stretched down
+        //           toward ground, reaching toe forward before heel-strike.
+        //   s ~  0  (mid-stance):  NEUTRAL — foot flat, ankle near 0.
+        //   s = -1  (push-off):    PLANTARFLEX — ankle drives hard into ground.
+        //   s ~  0, c = +1 (toe-off): DORSIFLEX — toes pull up to clear ground.
+        //
+        // s² drives a constant plantarflex at both extremes (front AND back).
+        // A narrow dorsiflex burst fires only at the toe-off transition.
+        let ankle_pitch = |s: f32, c: f32| -> f32 {
+            // Both front reach (s=+1) and push-off (s=-1) point the foot down.
+            let stretch = -(s * s) * ankle_plantarflex.abs();
+
+            // Dorsiflex burst at toe-off: s just crossed 0 from negative, c near +1.
+            let in_toe_off = (-s).clamp(0.0, 1.0) * c.max(0.0);
+            let pull_up = in_toe_off * ankle_dorsiflex;
+
+            stretch + pull_up
+        };
+
+        // ── Left leg ─────────────────────────────────────────────────────────
+        let ls = phase.sin();
+        let lc = phase.cos();
+
+        if let Some(mut tf) = l_thigh.iter_mut().next() {
+            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, thigh_pitch(ls), splay);
+        }
+        if let Some(mut tf) = l_shin.iter_mut().next() {
+            tf.rotation = Quat::from_rotation_x(-knee_bend(ls, lc));
+        }
+        if let Some(mut tf) = l_foot.iter_mut().next() {
+            tf.rotation = Quat::from_rotation_x(ankle_pitch(ls, lc));
+        }
+
+        // ── Right leg (half-cycle offset) ────────────────────────────────────
+        let rs = (phase + std::f32::consts::PI).sin(); // == -ls
+        let rc = (phase + std::f32::consts::PI).cos(); // == -lc
+
+        if let Some(mut tf) = r_thigh.iter_mut().next() {
+            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, thigh_pitch(rs), -splay);
         }
         if let Some(mut tf) = r_shin.iter_mut().next() {
-            let bend = if right_swing_speed > 0.0 {
-                right_swing_speed * knee_bend_max
-            } else {
-                0.02
-            };
-            tf.rotation = Quat::from_rotation_x(bend);
-        }
-
-        // ── 4. ARMS (Movie-Style Cross-Body Athletic Swing) ───────────────────
-        let arm_swing = 0.35 * anim_weight + 0.55 * sprint_blend;
-        let elbow_base = 0.20 + 0.65 * sprint_blend;
-        let elbow_swing = 0.15 * anim_weight + 0.35 * sprint_blend;
-
-        // Cross-body swing yaw (arms move slightly inward across the chest)
-        let cross_body = 0.22 * sprint_blend * phase.cos();
-
-        if let Some(mut tf) = l_upper_arm.iter_mut().next() {
-            let pitch = phase.sin() * arm_swing;
-            let roll = 0.08 * anim_weight + 0.15 * sprint_blend;
-            tf.rotation = Quat::from_euler(EulerRot::YXZ, cross_body, pitch, roll);
-        }
-        if let Some(mut tf) = r_upper_arm.iter_mut().next() {
-            let pitch = -phase.sin() * arm_swing;
-            let roll = -(0.08 * anim_weight + 0.15 * sprint_blend);
-            tf.rotation = Quat::from_euler(EulerRot::YXZ, -cross_body, pitch, roll);
-        }
-
-        if let Some(mut tf) = l_forearm.iter_mut().next() {
-            let bend = elbow_base + elbow_swing * (phase + std::f32::consts::FRAC_PI_2).sin();
-            tf.rotation = Quat::from_rotation_x(-bend);
-        }
-        if let Some(mut tf) = r_forearm.iter_mut().next() {
-            let bend = elbow_base + elbow_swing * (-phase + std::f32::consts::FRAC_PI_2).sin();
-            tf.rotation = Quat::from_rotation_x(-bend);
-        }
-
-        // ── 5. FEET (Ankle Flexion) ──────────────────────────────────────────
-        if let Some(mut tf) = l_foot.iter_mut().next() {
-            tf.rotation = Quat::from_rotation_x(-0.15 * phase.cos() * anim_weight);
+            tf.rotation = Quat::from_rotation_x(-knee_bend(rs, rc));
         }
         if let Some(mut tf) = r_foot.iter_mut().next() {
-            tf.rotation = Quat::from_rotation_x(0.15 * phase.cos() * anim_weight);
+            tf.rotation = Quat::from_rotation_x(ankle_pitch(rs, rc));
+        }
+
+        // ── 4. ARMS ───────────────────────────────────────────────────────────
+        //
+        // Idle:   arm hangs at side, small forward cant, forearm with slight droop.
+        // Walk:   elbow begins to lift; gentle pendulum arc.
+        // Sprint: full running pump — elbow bent ~90°, forearm sweeps from face-
+        //         height on the forward swing to extended-back on the back-swing.
+        //
+        //   Forward:   /     ← upper arm pitches forward, forearm tucked up (~90° bend)
+        //             /
+        //
+        //   Back:   \__      ← upper arm pitches back, forearm extends horizontal
+        //
+        // Counter-swing: left arm forward when right leg forward.
+        //   la_s = -phase.sin()   ra_s = phase.sin()
+
+        let upper_hang = 0.08_f32; // rest-pose forward cant of upper arm
+        let forearm_hang = 0.18_f32; // rest-pose: small natural elbow flex (positive = up toward face)
+
+        // Elbow bend base — positive = bent up toward face in this rig.
+        // Grows with speed so the arm holds a deeper bend at sprint.
+        let forearm_base = forearm_hang
+            + 0.15 * anim_weight     // walk: elbow lifts slightly
+            + 0.25 * sprint_blend; // sprint: elbow fully bent up (~90°)
+
+        // Upper arm swing arc: small at walk, large at sprint.
+        let swing_range = 0.18 * anim_weight + 0.42 * sprint_blend;
+
+        // Forearm sweep: ADD on forward swing (tucks up toward face),
+        // SUBTRACT on back-swing (extends back / opens the elbow).
+        let forearm_sweep = 0.35 * anim_weight + 0.70 * sprint_blend;
+
+        let la_s = -phase.sin();
+        if let Some(mut tf) = l_upper_arm.iter_mut().next() {
+            let pitch = upper_hang + la_s * swing_range;
+            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, pitch, 0.06 * anim_weight);
+        }
+        if let Some(mut tf) = l_forearm.iter_mut().next() {
+            // la_s > 0 (forward swing) → + sweep → more positive → forearm tucked up toward face
+            // la_s < 0 (back swing)    → - sweep → less/negative  → forearm extends back
+            tf.rotation = Quat::from_rotation_x(forearm_base + la_s * forearm_sweep);
+        }
+
+        let ra_s = phase.sin();
+        if let Some(mut tf) = r_upper_arm.iter_mut().next() {
+            let pitch = upper_hang + ra_s * swing_range;
+            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, pitch, -(0.06 * anim_weight));
+        }
+        if let Some(mut tf) = r_forearm.iter_mut().next() {
+            tf.rotation = Quat::from_rotation_x(forearm_base + ra_s * forearm_sweep);
         }
     } else {
-        // ── 6. JUMP & FALL (Velocity-Driven Dynamic Pose Blending) ───────────
+        // ── 5. JUMP & FALL (Velocity-Driven Pose) ────────────────────────────
         let vertical_speed = velocity.0.y;
-
-        // Map vertical speed to a normalized leap state (-1.0 = falling fast, 1.0 = leaping up)
         let leap_factor = (vertical_speed / settings.jump_velocity).clamp(-1.0, 1.0);
 
         if leap_factor > 0.0 {
-            // Ascending (Heroic Tuck Jump)
             let blend = leap_factor;
 
             if let Some(mut tf) = torso.iter_mut().next() {
                 tf.translation.y = 0.75;
-                tf.rotation = Quat::from_rotation_x(-0.08 * blend); // Lean back slightly
+                tf.rotation = Quat::from_rotation_x(-0.08 * blend);
             }
             if let Some(mut tf) = head.iter_mut().next() {
-                tf.rotation = Quat::from_rotation_x(0.12 * blend); // Look slightly up
+                tf.rotation = Quat::from_rotation_x(-0.12 * blend);
             }
-            // Tuck legs up
             if let Some(mut tf) = l_thigh.iter_mut().next() {
-                tf.rotation = Quat::from_rotation_x(-0.55 * blend);
+                tf.rotation = Quat::from_rotation_x(0.55 * blend);
             }
             if let Some(mut tf) = r_thigh.iter_mut().next() {
-                tf.rotation = Quat::from_rotation_x(-0.25 * blend);
+                tf.rotation = Quat::from_rotation_x(0.25 * blend);
             }
             if let Some(mut tf) = l_shin.iter_mut().next() {
                 tf.rotation = Quat::from_rotation_x(0.85 * blend);
@@ -428,31 +523,34 @@ pub fn animate_limbs(
             if let Some(mut tf) = r_shin.iter_mut().next() {
                 tf.rotation = Quat::from_rotation_x(0.55 * blend);
             }
-            // Elevate arms outward & upward (balancing)
+            if let Some(mut tf) = l_foot.iter_mut().next() {
+                tf.rotation = Quat::from_rotation_x(0.15 * blend); // slight dorsiflex on jump
+            }
+            if let Some(mut tf) = r_foot.iter_mut().next() {
+                tf.rotation = Quat::from_rotation_x(0.15 * blend);
+            }
             if let Some(mut tf) = l_upper_arm.iter_mut().next() {
-                tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, -0.60 * blend, 0.45 * blend);
+                tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, 0.60 * blend, 0.45 * blend);
             }
             if let Some(mut tf) = r_upper_arm.iter_mut().next() {
-                tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, -0.60 * blend, -0.45 * blend);
+                tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, 0.60 * blend, -0.45 * blend);
             }
             if let Some(mut tf) = l_forearm.iter_mut().next() {
-                tf.rotation = Quat::from_rotation_x(-0.30 * blend);
+                tf.rotation = Quat::from_rotation_x(0.30 * blend);
             }
             if let Some(mut tf) = r_forearm.iter_mut().next() {
-                tf.rotation = Quat::from_rotation_x(-0.30 * blend);
+                tf.rotation = Quat::from_rotation_x(0.30 * blend);
             }
         } else {
-            // Descending (Pre-landing Fall Pose)
             let blend = -leap_factor;
 
             if let Some(mut tf) = torso.iter_mut().next() {
                 tf.translation.y = 0.75;
-                tf.rotation = Quat::from_rotation_x(0.18 * blend); // Aggressive forward lean
+                tf.rotation = Quat::from_rotation_x(0.18 * blend);
             }
             if let Some(mut tf) = head.iter_mut().next() {
-                tf.rotation = Quat::from_rotation_x(-0.10 * blend); // Look downward
+                tf.rotation = Quat::from_rotation_x(0.10 * blend);
             }
-            // Reach legs straight down to prepare for landing cushioning
             if let Some(mut tf) = l_thigh.iter_mut().next() {
                 tf.rotation = Quat::from_rotation_x(-0.10 * blend);
             }
@@ -465,18 +563,23 @@ pub fn animate_limbs(
             if let Some(mut tf) = r_shin.iter_mut().next() {
                 tf.rotation = Quat::from_rotation_x(0.20 * blend);
             }
-            // Arms reach slightly back & down
+            if let Some(mut tf) = l_foot.iter_mut().next() {
+                tf.rotation = Quat::from_rotation_x(-0.20 * blend); // plantarflex on fall
+            }
+            if let Some(mut tf) = r_foot.iter_mut().next() {
+                tf.rotation = Quat::from_rotation_x(-0.20 * blend);
+            }
             if let Some(mut tf) = l_upper_arm.iter_mut().next() {
-                tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, 0.40 * blend, 0.15 * blend);
+                tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, -0.40 * blend, 0.15 * blend);
             }
             if let Some(mut tf) = r_upper_arm.iter_mut().next() {
-                tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, 0.40 * blend, -0.15 * blend);
+                tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, -0.40 * blend, -0.15 * blend);
             }
             if let Some(mut tf) = l_forearm.iter_mut().next() {
-                tf.rotation = Quat::from_rotation_x(-0.20 * blend);
+                tf.rotation = Quat::from_rotation_x(0.20 * blend);
             }
             if let Some(mut tf) = r_forearm.iter_mut().next() {
-                tf.rotation = Quat::from_rotation_x(-0.20 * blend);
+                tf.rotation = Quat::from_rotation_x(0.20 * blend);
             }
         }
     }

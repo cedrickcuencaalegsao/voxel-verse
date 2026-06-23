@@ -43,7 +43,6 @@ fn spawn_player(
     let spawn_position = Vec3::new(0.0, ground_y + 1.0, 0.0);
     let camera_target = spawn_position + Vec3::Y * 1.1;
 
-    // ── Materials ─────────────────────────────────────────────────────────────
     let skin = materials.add(StandardMaterial {
         base_color: Color::srgb(0.95, 0.76, 0.55),
         perceptual_roughness: 0.8,
@@ -70,8 +69,8 @@ fn spawn_player(
         ..default()
     });
 
-    let head_mesh = meshes.add(Cuboid::new(0.5, 0.5, 0.5));
-    let hair_mesh = meshes.add(Cuboid::new(0.52, 0.15, 0.52));
+    let head_mesh = meshes.add(Cuboid::new(0.38, 0.38, 0.38)); // was 0.5 × 0.5 × 0.5
+    let hair_mesh = meshes.add(Cuboid::new(0.40, 0.12, 0.40)); // scaled down with head
     let torso_mesh = meshes.add(Cuboid::new(0.5, 0.75, 0.25));
 
     let upper_arm_mesh = meshes.add(Cuboid::new(0.22, 0.38, 0.22));
@@ -117,12 +116,37 @@ fn spawn_player(
                                 head_joint.spawn((
                                     Mesh3d(head_mesh.clone()),
                                     MeshMaterial3d(skin.clone()),
-                                    Transform::from_xyz(0.0, 0.25, 0.0),
+                                    Transform::from_xyz(0.0, 0.19, 0.0), // was 0.25; centers the smaller head
                                 ));
+                                // head_joint.spawn((
+                                //     Mesh3d(hair_mesh.clone()),
+                                //     MeshMaterial3d(hair.clone()),
+                                //     Transform::from_xyz(0.0, 0.44, 0.00), // was 0.575; sits on top of smaller head
+                                // ));
+                                //
+                                // top
                                 head_joint.spawn((
                                     Mesh3d(hair_mesh.clone()),
                                     MeshMaterial3d(hair.clone()),
-                                    Transform::from_xyz(0.0, 0.575, 0.0),
+                                    Transform::from_xyz(0.0, 0.44, 0.0),
+                                ));
+                                // back — full width & height, flush with back face (Z=+0.19)
+                                head_joint.spawn((
+                                    Mesh3d(meshes.add(Cuboid::new(0.42, 0.40, 0.06))),
+                                    MeshMaterial3d(hair.clone()),
+                                    Transform::from_xyz(0.0, 0.19, 0.22),
+                                ));
+                                // left side — back half (Z=0 → +0.19), flush with X=+0.19
+                                head_joint.spawn((
+                                    Mesh3d(meshes.add(Cuboid::new(0.06, 0.40, 0.25))),
+                                    MeshMaterial3d(hair.clone()),
+                                    Transform::from_xyz(0.22, 0.19, 0.075),
+                                ));
+                                // right side — back half, flush with X=-0.19
+                                head_joint.spawn((
+                                    Mesh3d(meshes.add(Cuboid::new(0.06, 0.40, 0.25))),
+                                    MeshMaterial3d(hair.clone()),
+                                    Transform::from_xyz(-0.22, 0.19, 0.075),
                                 ));
                             });
 
@@ -130,7 +154,7 @@ fn spawn_player(
                         torso
                             .spawn((
                                 LeftUpperArm,
-                                Transform::from_xyz(0.36, 0.56, 0.0),
+                                Transform::from_xyz(0.36, 0.75, 0.0),
                                 Visibility::default(),
                             ))
                             .with_children(|u_arm| {
@@ -173,7 +197,7 @@ fn spawn_player(
                         torso
                             .spawn((
                                 RightUpperArm,
-                                Transform::from_xyz(-0.36, 0.56, 0.0),
+                                Transform::from_xyz(-0.36, 0.75, 0.0),
                                 Visibility::default(),
                             ))
                             .with_children(|u_arm| {
