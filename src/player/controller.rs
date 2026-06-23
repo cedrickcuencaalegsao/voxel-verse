@@ -4,9 +4,9 @@ use super::{
         player_look, toggle_cursor_grab,
     },
     movement::{
-        Grounded, Head, LeftFoot, LeftForeArm, LeftHand, LeftShin, LeftThigh, LeftUpperArm,
-        MovementSettings, RightFoot, RightForeArm, RightHand, RightShin, RightThigh, RightUpperArm,
-        Torso, Velocity, animate_limbs, player_movement,
+        AirborneTimer, Grounded, Head, LeftFoot, LeftForeArm, LeftHand, LeftShin, LeftThigh,
+        LeftUpperArm, MovementSettings, RightFoot, RightForeArm, RightHand, RightShin, RightThigh,
+        RightUpperArm, Torso, Velocity, animate_limbs, player_movement,
     },
 };
 use crate::world::world_manager::{Player, WorldManager};
@@ -69,8 +69,8 @@ fn spawn_player(
         ..default()
     });
 
-    let head_mesh = meshes.add(Cuboid::new(0.38, 0.38, 0.38)); // was 0.5 × 0.5 × 0.5
-    let hair_mesh = meshes.add(Cuboid::new(0.40, 0.12, 0.40)); // scaled down with head
+    let head_mesh = meshes.add(Cuboid::new(0.38, 0.38, 0.38));
+    let hair_mesh = meshes.add(Cuboid::new(0.40, 0.12, 0.40));
     let torso_mesh = meshes.add(Cuboid::new(0.5, 0.75, 0.25));
 
     let upper_arm_mesh = meshes.add(Cuboid::new(0.22, 0.38, 0.22));
@@ -88,6 +88,7 @@ fn spawn_player(
             Visibility::default(),
             Velocity(Vec3::ZERO),
             Grounded(true),
+            AirborneTimer(0.0), // Added tracking timer here
         ))
         .with_children(|p| {
             p.spawn((PlayerBody, Transform::IDENTITY, Visibility::default()))
@@ -116,27 +117,23 @@ fn spawn_player(
                                 head_joint.spawn((
                                     Mesh3d(head_mesh.clone()),
                                     MeshMaterial3d(skin.clone()),
-                                    Transform::from_xyz(0.0, 0.19, 0.0), // was 0.25; centers the smaller head
+                                    Transform::from_xyz(0.0, 0.19, 0.0),
                                 ));
-                                // top
                                 head_joint.spawn((
                                     Mesh3d(hair_mesh.clone()),
                                     MeshMaterial3d(hair.clone()),
                                     Transform::from_xyz(0.0, 0.44, 0.0),
                                 ));
-                                // back — full width & height, flush with back face (Z=+0.19)
                                 head_joint.spawn((
                                     Mesh3d(meshes.add(Cuboid::new(0.42, 0.40, 0.06))),
                                     MeshMaterial3d(hair.clone()),
                                     Transform::from_xyz(0.0, 0.19, 0.22),
                                 ));
-                                // left side — back half (Z=0 → +0.19), flush with X=+0.19
                                 head_joint.spawn((
                                     Mesh3d(meshes.add(Cuboid::new(0.06, 0.40, 0.25))),
                                     MeshMaterial3d(hair.clone()),
                                     Transform::from_xyz(0.22, 0.19, 0.075),
                                 ));
-                                // right side — back half, flush with X=-0.19
                                 head_joint.spawn((
                                     Mesh3d(meshes.add(Cuboid::new(0.06, 0.40, 0.25))),
                                     MeshMaterial3d(hair.clone()),

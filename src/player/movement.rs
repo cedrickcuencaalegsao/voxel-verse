@@ -2,7 +2,6 @@ use crate::utils::constants::{GRAVITY, JUMP_VELOCITY, PLAYER_SPEED};
 use crate::world::world_manager::WorldManager;
 use bevy::prelude::*;
 
-// ── Limb segment joint marker components ──────────────────────────────────────
 #[derive(Component)]
 pub struct Torso;
 
@@ -37,7 +36,6 @@ pub struct RightShin;
 #[derive(Component)]
 pub struct RightFoot;
 
-// ── Movement settings ─────────────────────────────────────────────────────────
 #[derive(Resource)]
 pub struct MovementSettings {
     pub speed: f32,
@@ -63,7 +61,10 @@ pub struct Velocity(pub Vec3);
 #[derive(Component)]
 pub struct Grounded(pub bool);
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// Tracks how long the player has been airborne
+#[derive(Component)]
+pub struct AirborneTimer(pub f32);
+
 fn block_ground_y(world: &WorldManager, x: f32, z: f32) -> f32 {
     let bx = x.floor() as f64;
     let bz = z.floor() as f64;
@@ -75,15 +76,19 @@ fn block_ground_y(world: &WorldManager, x: f32, z: f32) -> f32 {
     surface.floor() as f32 + 1.0
 }
 
-// ── Player movement ───────────────────────────────────────────────────────────
 pub fn player_movement(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(&mut Velocity, &mut Transform, &mut Grounded)>,
+    mut query: Query<(
+        &mut Velocity,
+        &mut Transform,
+        &mut Grounded,
+        &mut AirborneTimer,
+    )>,
     settings: Res<MovementSettings>,
     world: Res<WorldManager>,
 ) {
-    for (mut velocity, mut transform, mut grounded) in query.iter_mut() {
+    for (mut velocity, mut transform, mut grounded, mut airborne_timer) in query.iter_mut() {
         let dt = time.delta_secs();
 
         let mut direction = Vec3::ZERO;
@@ -144,6 +149,8 @@ pub fn player_movement(
         if grounded.0 && keys.just_pressed(KeyCode::Space) {
             velocity.0.y = settings.jump_velocity;
             grounded.0 = false;
+            // Bypass the 2.5s walk animation delay on intentional jump
+            airborne_timer.0 = 2.5;
         }
         velocity.0.y -= settings.gravity * dt;
         transform.translation.y += velocity.0.y * dt;
@@ -156,16 +163,21 @@ pub fn player_movement(
         } else {
             grounded.0 = false;
         }
+
+        if grounded.0 {
+            airborne_timer.0 = 0.0;
+        } else {
+            airborne_timer.0 += dt;
+        }
     }
 }
 
-// ── Limb animation ────────────────────────────────────────────────────────────
 use crate::world::world_manager::Player;
 
 pub fn animate_limbs(
     time: Res<Time>,
     settings: Res<MovementSettings>,
-    player_query: Query<(&Velocity, &Grounded), With<Player>>,
+    player_query: Query<(&Velocity, &Grounded, &AirborneTimer), With<Player>>,
     mut torso: Query<&mut Transform, With<Torso>>,
     mut head: Query<&mut Transform, (With<Head>, Without<Torso>)>,
     mut l_upper_arm: Query<&mut Transform, (With<LeftUpperArm>, Without<Torso>, Without<Head>)>,
@@ -287,26 +299,24 @@ pub fn animate_limbs(
         ),
     >,
 ) {
-    let Some((velocity, grounded)) = player_query.iter().next() else {
+    let Some((velocity, grounded, airborne_timer)) = player_query.iter().next() else {
         return;
     };
 
     let t = time.elapsed_secs();
-    let is_grounded = grounded.0;
+
+    let is_grounded_or_transitioning = grounded.0 || airborne_timer.0 < 2.5;
 
     let horizontal_speed = Vec3::new(velocity.0.x, 0.0, velocity.0.z).length();
     let speed_ratio = (horizontal_speed / settings.speed).clamp(0.0, 2.0);
     let anim_weight = speed_ratio.min(1.0);
     let sprint_blend = (speed_ratio - 1.0).max(0.0).min(1.0);
 
-    // Dynamic stride speed
-    let frequency = 6.5 + 5.5 * sprint_blend;
+    let frequency = 8.0 + 5.5 * sprint_blend;
     let phase = t * frequency;
 
-    if is_grounded {
-        // ── 1. TORSO (Forward Lean + Reduced Sway & Bobbing) ─────────────────
+    if is_grounded_or_transitioning {
         let forward_lean = 0.10 * anim_weight + 0.22 * sprint_blend;
-        // Negative pitch = forward lean in Bevy (+X rotation tilts the top backward).
         let torso_pitch = -forward_lean - 0.02 * anim_weight * phase.sin() * 0.5;
         let torso_yaw = (0.03 * anim_weight + 0.05 * sprint_blend) * phase.sin();
         let torso_roll = -(0.02 * anim_weight + 0.03 * sprint_blend)
@@ -318,107 +328,50 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_euler(EulerRot::YXZ, torso_yaw, torso_pitch, torso_roll);
         }
 
-        // ── 2. HEAD (Secondary Motion lag) ───────────────────────────────────
         if let Some(mut tf) = head.iter_mut().next() {
-            // Positive pitch here counteracts the torso's forward lean, keeping the head upright.
             let head_pitch = forward_lean * 0.7 + (0.02 * anim_weight) * (2.0 * phase).sin();
             let head_yaw = -torso_yaw * 0.5;
             let head_roll = -torso_roll * 0.4;
             tf.rotation = Quat::from_euler(EulerRot::YXZ, head_yaw, head_pitch, head_roll);
         }
 
-        // ── 3. LEGS (Biomechanically Accurate Running Gait) ───────────────────
-        //
-        // Human running gait — per-leg phase drives three joints together:
-        //
-        //   Phase angle relative to leg (left = `phase`, right = `phase + π`):
-        //
-        //   sin → +1  : leg at peak FORWARD swing
-        //               · Thigh pitched max forward
-        //               · Knee bent high (foot clearing ground)
-        //               · Foot dorsiflexed (toes up, ready to strike)
-        //
-        //   sin →  0, cos → -1 : FOOT STRIKE / early stance
-        //               · Thigh near neutral, leg extending downward
-        //               · Knee softly bent to absorb impact
-        //               · Foot neutral / slight plantarflexion at contact
-        //
-        //   sin → -1  : leg at full EXTENSION behind body (push-off)
-        //               · Thigh pitched max backward (hip extension)
-        //               · Knee nearly straight — leg is a rigid lever
-        //               · Ankle plantarflexes hard (toes push off ground)
-        //
-        //   sin →  0, cos → +1 : TOE-OFF / start of swing
-        //               · Knee re-bends rapidly to clear foot from ground
-        //               · Foot flicks up (rebound dorsiflex)
-        //               · Thigh begins swinging forward again
-
-        let hip_fwd = 0.48 * anim_weight + 0.52 * sprint_blend; // forward hip pitch
-        let hip_back = 0.32 * anim_weight + 0.42 * sprint_blend; // backward hip extension
+        let hip_fwd = 0.48 * anim_weight + 0.52 * sprint_blend;
+        let hip_back = 0.32 * anim_weight + 0.42 * sprint_blend;
         let splay = 0.03 * anim_weight + 0.05 * sprint_blend;
 
-        // Knee ROM: high lift during swing, near-zero at stance, re-bend at toe-off
         let knee_swing_peak = 0.75 * anim_weight + 0.65 * sprint_blend;
         let knee_toe_off = 0.50 * anim_weight + 0.45 * sprint_blend;
-        let knee_stance_min = 0.05_f32; // never fully locked straight
+        let knee_stance_min = 0.05_f32;
 
-        // Ankle ROM
-        let ankle_dorsiflex = 0.20 * anim_weight + 0.15 * sprint_blend; // foot up on swing
-        let ankle_plantarflex = -0.35 * anim_weight - 0.30 * sprint_blend; // foot down on push-off
+        let ankle_dorsiflex = 0.20 * anim_weight + 0.15 * sprint_blend;
+        let ankle_plantarflex = -0.35 * anim_weight - 0.30 * sprint_blend;
 
-        // ── Per-leg helper closures ───────────────────────────────────────────
-
-        // Thigh pitch: asymmetric — more forward ROM than backward (natural gait)
         let thigh_pitch = |s: f32| -> f32 {
             if s >= 0.0 {
-                -s * hip_fwd // forward swing
+                -s * hip_fwd
             } else {
-                -s * hip_back // hip extension (pushes backward less than it swings forward)
+                -s * hip_back
             }
         };
 
-        // Knee bend: peaks during swing, near-zero at stance, spikes at toe-off.
-        // `s` = sin of leg phase, `c` = cos of leg phase
-        //   · Swing phase (s > 0, c going toward -1): c.max(0) drives the lift.
-        //   · Toe-off (s transitioning from -1 back toward 0, c near 0 going positive):
-        //     we detect this as s ∈ (-1, 0) and c < 0.3, adding an extra burst.
         let knee_bend = |s: f32, c: f32| -> f32 {
-            // Primary lift: knee bends when leg swings FORWARD (s > 0).
-            // Use -c.max(0) because cos is -1 at peak forward swing (s=+1),
-            // and near +1 when the leg is behind — so we flip it.
             let swing = (-c).max(0.0) * knee_swing_peak;
 
-            // Toe-off burst: leg just left the ground (s crossing 0 from negative,
-            // c crossing from +1 toward 0). Knee snaps up to clear the foot.
             let in_toe_off_zone = ((-s).clamp(0.0, 1.0)) * ((1.0 - c.abs()).max(0.0));
             let toe_off = in_toe_off_zone * knee_toe_off;
 
-            // At stance (s near 0, c near -1): both terms are ~0 → near-straight leg.
             (swing + toe_off).max(knee_stance_min)
         };
 
-        // Ankle pitch — human gait:
-        //
-        //   s =  1  (front reach): PLANTARFLEX — foot pointed/stretched down
-        //           toward ground, reaching toe forward before heel-strike.
-        //   s ~  0  (mid-stance):  NEUTRAL — foot flat, ankle near 0.
-        //   s = -1  (push-off):    PLANTARFLEX — ankle drives hard into ground.
-        //   s ~  0, c = +1 (toe-off): DORSIFLEX — toes pull up to clear ground.
-        //
-        // s² drives a constant plantarflex at both extremes (front AND back).
-        // A narrow dorsiflex burst fires only at the toe-off transition.
         let ankle_pitch = |s: f32, c: f32| -> f32 {
-            // Both front reach (s=+1) and push-off (s=-1) point the foot down.
             let stretch = -(s * s) * ankle_plantarflex.abs();
 
-            // Dorsiflex burst at toe-off: s just crossed 0 from negative, c near +1.
             let in_toe_off = (-s).clamp(0.0, 1.0) * c.max(0.0);
             let pull_up = in_toe_off * ankle_dorsiflex;
 
             stretch + pull_up
         };
 
-        // ── Left leg ─────────────────────────────────────────────────────────
         let ls = phase.sin();
         let lc = phase.cos();
 
@@ -432,9 +385,8 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_rotation_x(ankle_pitch(ls, lc));
         }
 
-        // ── Right leg (half-cycle offset) ────────────────────────────────────
-        let rs = (phase + std::f32::consts::PI).sin(); // == -ls
-        let rc = (phase + std::f32::consts::PI).cos(); // == -lc
+        let rs = (phase + std::f32::consts::PI).sin();
+        let rc = (phase + std::f32::consts::PI).cos();
 
         if let Some(mut tf) = r_thigh.iter_mut().next() {
             tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, thigh_pitch(rs), -splay);
@@ -446,35 +398,13 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_rotation_x(ankle_pitch(rs, rc));
         }
 
-        // ── 4. ARMS ───────────────────────────────────────────────────────────
-        //
-        // Idle:   arm hangs at side, small forward cant, forearm with slight droop.
-        // Walk:   elbow begins to lift; gentle pendulum arc.
-        // Sprint: full running pump — elbow bent ~90°, forearm sweeps from face-
-        //         height on the forward swing to extended-back on the back-swing.
-        //
-        //   Forward:   /     ← upper arm pitches forward, forearm tucked up (~90° bend)
-        //             /
-        //
-        //   Back:   \__      ← upper arm pitches back, forearm extends horizontal
-        //
-        // Counter-swing: left arm forward when right leg forward.
-        //   la_s = -phase.sin()   ra_s = phase.sin()
+        let upper_hang = 0.08_f32;
+        let forearm_hang = 0.18_f32;
 
-        let upper_hang = 0.08_f32; // rest-pose forward cant of upper arm
-        let forearm_hang = 0.18_f32; // rest-pose: small natural elbow flex (positive = up toward face)
+        let forearm_base = forearm_hang + 0.15 * anim_weight + 0.25 * sprint_blend;
 
-        // Elbow bend base — positive = bent up toward face in this rig.
-        // Grows with speed so the arm holds a deeper bend at sprint.
-        let forearm_base = forearm_hang
-            + 0.15 * anim_weight     // walk: elbow lifts slightly
-            + 0.25 * sprint_blend; // sprint: elbow fully bent up (~90°)
-
-        // Upper arm swing arc: small at walk, large at sprint.
         let swing_range = 0.18 * anim_weight + 0.42 * sprint_blend;
 
-        // Forearm sweep: ADD on forward swing (tucks up toward face),
-        // SUBTRACT on back-swing (extends back / opens the elbow).
         let forearm_sweep = 0.35 * anim_weight + 0.70 * sprint_blend;
 
         let la_s = -phase.sin();
@@ -483,8 +413,6 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, pitch, 0.06 * anim_weight);
         }
         if let Some(mut tf) = l_forearm.iter_mut().next() {
-            // la_s > 0 (forward swing) → + sweep → more positive → forearm tucked up toward face
-            // la_s < 0 (back swing)    → - sweep → less/negative  → forearm extends back
             tf.rotation = Quat::from_rotation_x(forearm_base + la_s * forearm_sweep);
         }
 
@@ -497,7 +425,6 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_rotation_x(forearm_base + ra_s * forearm_sweep);
         }
     } else {
-        // ── 5. JUMP & FALL (Velocity-Driven Pose) ────────────────────────────
         let vertical_speed = velocity.0.y;
         let leap_factor = (vertical_speed / settings.jump_velocity).clamp(-1.0, 1.0);
 
@@ -524,7 +451,7 @@ pub fn animate_limbs(
                 tf.rotation = Quat::from_rotation_x(0.55 * blend);
             }
             if let Some(mut tf) = l_foot.iter_mut().next() {
-                tf.rotation = Quat::from_rotation_x(0.15 * blend); // slight dorsiflex on jump
+                tf.rotation = Quat::from_rotation_x(0.15 * blend);
             }
             if let Some(mut tf) = r_foot.iter_mut().next() {
                 tf.rotation = Quat::from_rotation_x(0.15 * blend);
@@ -564,7 +491,7 @@ pub fn animate_limbs(
                 tf.rotation = Quat::from_rotation_x(0.20 * blend);
             }
             if let Some(mut tf) = l_foot.iter_mut().next() {
-                tf.rotation = Quat::from_rotation_x(-0.20 * blend); // plantarflex on fall
+                tf.rotation = Quat::from_rotation_x(-0.20 * blend);
             }
             if let Some(mut tf) = r_foot.iter_mut().next() {
                 tf.rotation = Quat::from_rotation_x(-0.20 * blend);
