@@ -6,4 +6,5 @@ pub mod load;
 pub mod plugin;
 pub mod save;
 pub mod terrain;
+pub mod tree;
 pub mod world_manager;

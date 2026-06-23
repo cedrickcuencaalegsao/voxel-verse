@@ -13,10 +13,9 @@ pub enum BlockKind {
     Wood,
     Leaves,
     Bedrock,
-    // ── ores ─────────────────────────────────────────
-    CoalOre,    // 9
-    IronOre,    // 10
-    DiamondOre, // 11
+    CoalOre,
+    IronOre,
+    DiamondOre,
 }
 
 impl TryFrom<u8> for BlockKind {
@@ -43,7 +42,6 @@ impl TryFrom<u8> for BlockKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
 pub struct Block {
     pub kind: BlockKind,
-    // Future: orientation, state, etc.
 }
 
 impl Default for Block {
