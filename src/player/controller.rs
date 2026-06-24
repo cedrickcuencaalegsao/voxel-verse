@@ -10,6 +10,7 @@ use super::{
     },
 };
 use crate::world::world_manager::{Player, WorldManager};
+use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 
 pub struct PlayerPlugin;
@@ -27,9 +28,34 @@ impl Plugin for PlayerPlugin {
                     handle_cursor_auto_grab,
                     cycle_camera_view,
                     player_look,
+                    configure_light_shadow_layers, // Added system to make shadows work on Layer 1
                 )
                     .chain(),
             );
+    }
+}
+
+/// Automatically ensures all light sources in the scene cast shadows and illuminate Layer 1.
+pub fn configure_light_shadow_layers(
+    mut commands: Commands,
+    lights_query: Query<
+        (Entity, Option<&RenderLayers>),
+        Or<(With<DirectionalLight>, With<PointLight>, With<SpotLight>)>,
+    >,
+) {
+    for (entity, render_layers) in lights_query.iter() {
+        let needs_update = match render_layers {
+            Some(layers) => !layers.intersects(&RenderLayers::layer(1)),
+            None => true,
+        };
+
+        if needs_update {
+            let new_layers = render_layers
+                .cloned()
+                .unwrap_or_else(|| RenderLayers::layer(0))
+                .with(1);
+            commands.entity(entity).insert(new_layers);
+        }
     }
 }
 
@@ -119,26 +145,31 @@ fn spawn_player(
                                     Mesh3d(head_mesh.clone()),
                                     MeshMaterial3d(skin.clone()),
                                     Transform::from_xyz(0.0, 0.19, 0.0),
+                                    RenderLayers::layer(1), // Head on Layer 1
                                 ));
                                 head_joint.spawn((
                                     Mesh3d(hair_mesh.clone()),
                                     MeshMaterial3d(hair.clone()),
                                     Transform::from_xyz(0.0, 0.44, 0.0),
+                                    RenderLayers::layer(1), // Hair on Layer 1
                                 ));
                                 head_joint.spawn((
                                     Mesh3d(meshes.add(Cuboid::new(0.42, 0.40, 0.06))),
                                     MeshMaterial3d(hair.clone()),
                                     Transform::from_xyz(0.0, 0.19, 0.22),
+                                    RenderLayers::layer(1), // Back Hair on Layer 1
                                 ));
                                 head_joint.spawn((
                                     Mesh3d(meshes.add(Cuboid::new(0.06, 0.40, 0.25))),
                                     MeshMaterial3d(hair.clone()),
                                     Transform::from_xyz(0.22, 0.19, 0.075),
+                                    RenderLayers::layer(1), // Side Hair on Layer 1
                                 ));
                                 head_joint.spawn((
                                     Mesh3d(meshes.add(Cuboid::new(0.06, 0.40, 0.25))),
                                     MeshMaterial3d(hair.clone()),
                                     Transform::from_xyz(-0.22, 0.19, 0.075),
+                                    RenderLayers::layer(1), // Side Hair on Layer 1
                                 ));
                             });
 
@@ -324,5 +355,6 @@ fn spawn_player(
         Camera3d::default(),
         Transform::from_translation(camera_target + Vec3::new(0.0, 2.0, 6.0))
             .looking_at(camera_target, Vec3::Y),
+        RenderLayers::layer(0), // Set default render layer on Camera
     ));
 }

@@ -1,4 +1,5 @@
 use crate::world::world_manager::Player;
+use bevy::camera::visibility::RenderLayers;
 use bevy::{
     input::mouse::AccumulatedMouseMotion,
     prelude::*,
@@ -105,7 +106,10 @@ pub fn player_look(
     mouse_motion: Res<AccumulatedMouseMotion>,
     cursor_options: Query<&CursorOptions, With<PrimaryWindow>>,
     mut player_query: Query<&mut Transform, With<Player>>,
-    mut camera_query: Query<(&mut Transform, &mut PlayerCamera), Without<Player>>,
+    mut camera_query: Query<
+        (&mut Transform, &mut PlayerCamera, &mut RenderLayers),
+        Without<Player>,
+    >,
     torso_query: Query<&Transform, (With<Torso>, Without<Player>, Without<PlayerCamera>)>,
     head_joint_query: Query<
         &Transform,
@@ -120,7 +124,8 @@ pub fn player_look(
     let Ok(mut player_transform) = player_query.single_mut() else {
         return;
     };
-    let Ok((mut camera_transform, mut camera)) = camera_query.single_mut() else {
+    let Ok((mut camera_transform, mut camera, mut camera_layers)) = camera_query.single_mut()
+    else {
         return;
     };
 
@@ -164,5 +169,15 @@ pub fn player_look(
             camera_transform.translation = target;
             camera_transform.rotation = look_rotation;
         }
+    }
+
+    // Update active camera layers depending on First-Person or Third-Person status
+    if camera.mode == CameraMode::FirstPerson {
+        // Only render Layer 0 (World, limbs, torso). Head/hair meshes on Layer 1 are ignored,
+        // completely preventing them from clipping in FPP, yet they continue casting shadows.
+        *camera_layers = RenderLayers::layer(0);
+    } else {
+        // Render both Layer 0 and Layer 1 so the character is fully visible in Third-Person
+        *camera_layers = RenderLayers::layer(0).with(1);
     }
 }
