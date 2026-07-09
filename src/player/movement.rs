@@ -325,52 +325,92 @@ pub fn animate_limbs(
     let anim_weight = speed_ratio.min(1.0);
     let sprint_blend = (speed_ratio - 1.0).max(0.0).min(1.0);
 
-    let base_frequency = if is_crouching { 6.5 } else { 8.0 };
-    let frequency = base_frequency + 5.5 * sprint_blend;
-    let phase = t * frequency;
+    // Step frequency scales with speed. Real humans take ~1.7-2.2 steps/sec
+    // walking and ~2.8-3.2 steps/sec sprinting. The full gait cycle is two
+    // steps, so the phase advances by 2*PI per cycle (one step is PI).
+    let base_frequency = if is_crouching { 1.6 } else { 2.0 };
+    let frequency = base_frequency + 1.0 * sprint_blend;
+    let phase = t * frequency * std::f32::consts::TAU;
+    // s = swing signal in [-1, 1] for a leg; positive = forward swing,
+    // negative = stance. c = complementary cosine (used for toe-off / heel-strike).
+    let ls = phase.sin();
+    let lc = phase.cos();
+    let rs = (phase + std::f32::consts::PI).sin();
+    let rc = (phase + std::f32::consts::PI).cos();
 
     if is_grounded_or_transitioning {
         let torso_base_y = if is_crouching { 0.76 } else { 0.92 };
         let crouch_lean = if is_crouching { 0.45 } else { 0.0 };
 
-        let forward_lean = 0.10 * anim_weight + 0.22 * sprint_blend + crouch_lean;
-        let torso_pitch = -forward_lean - 0.02 * anim_weight * phase.sin() * 0.5;
-        let torso_yaw = 0.03 * anim_weight * phase.sin();
-        let torso_roll = -0.02 * anim_weight * (phase + std::f32::consts::FRAC_PI_2).sin();
-        let torso_bob = -0.025 * anim_weight * (2.0 * phase).cos().abs();
+        let forward_lean = 0.08 * anim_weight + 0.18 * sprint_blend + crouch_lean;
+
+        // Vertical bob: humans reach their lowest point once per step at heel-strike.
+        // Use a single sin (not |cos|) so it has a smooth up/down, and shift the phase
+        // so the dip happens at heel-strike (when each foot lands).
+        let bob_amp = 0.04 * anim_weight + 0.05 * sprint_blend;
+        let torso_bob = -bob_amp * (phase - std::f32::consts::FRAC_PI_2).sin().max(0.0);
+
+        // Counter-rotation of the torso against the hips — a real human twists the
+        // upper body slightly opposite to the leading leg.
+        let twist_amp = 0.04 * anim_weight + 0.05 * sprint_blend;
+        let torso_yaw = -twist_amp * ls;
+
+        let torso_pitch = -forward_lean;
 
         if let Some(mut tf) = torso.iter_mut().next() {
             tf.translation.y = torso_base_y + torso_bob;
-            tf.rotation = Quat::from_euler(EulerRot::YXZ, torso_yaw, torso_pitch, torso_roll);
+            // Roll is held at zero to suppress the left/right wobble.
+            tf.rotation = Quat::from_euler(EulerRot::YXZ, torso_yaw, torso_pitch, 0.0);
         }
 
+        // Head counter-balances: stays mostly level with tiny compensatory movements.
         if let Some(mut tf) = head.iter_mut().next() {
-            let head_pitch = forward_lean + (0.02 * anim_weight) * (2.0 * phase).sin();
-            let head_yaw = -torso_yaw * 0.5;
-            let head_roll = -torso_roll * 0.4;
-            tf.rotation = Quat::from_euler(EulerRot::YXZ, head_yaw, head_pitch, head_roll);
+            let head_pitch = forward_lean * 0.4;
+            let head_yaw = -torso_yaw * 0.6;
+            tf.rotation = Quat::from_euler(EulerRot::YXZ, head_yaw, head_pitch, 0.0);
         }
 
-        let swing_mult = if is_crouching { 0.75 } else { 1.0 };
+        let swing_mult = if is_crouching { 0.6 } else { 1.0 };
 
-        let hip_fwd = (0.48 * anim_weight + 0.52 * sprint_blend) * swing_mult;
-        let hip_back = (0.32 * anim_weight + 0.42 * sprint_blend) * swing_mult;
-        let splay = 0.03 * anim_weight + 0.05 * sprint_blend;
+        // Hip swing: the femur swings ~30-40° at the hip when walking, more
+        // when sprinting. The thigh reaches its FORWARD limit at heel-strike
+        // (s=0, c=1) and its BACKWARD limit at toe-off (s=0, c=-1). At mid-
+        // swing and mid-stance the thigh is roughly vertical. We drive this
+        // with the cosine of the phase so the extremes line up with foot
+        // contact, which gives the sprint the long-reach "reach out in front,
+        // push off behind" silhouette.
+        let hip_fwd = (0.55 * anim_weight + 0.75 * sprint_blend) * swing_mult;
+        let hip_back = (0.40 * anim_weight + 0.55 * sprint_blend) * swing_mult;
 
-        let knee_swing_peak = (0.75 * anim_weight + 0.65 * sprint_blend) * swing_mult;
-        let knee_toe_off = (0.50 * anim_weight + 0.45 * sprint_blend) * swing_mult;
+        // Slight outward splay during swing, mostly visible at sprint.
+        let splay_amp = 0.01 * anim_weight + 0.02 * sprint_blend;
 
-        let knee_stance_min = if is_crouching { 0.10 } else { 0.05 };
+        // Knee bend peaks in mid-swing (knee drives up) and mid-stance
+        // (shin hangs down so it forms a horizontal "_" with the up-angled
+        // "/" thigh). The knee extends toward both edges (heel-strike and
+        // toe-off) so the leg forms a "\" out front and pushes off cleanly
+        // behind.
+        let knee_swing_peak = (0.75 * anim_weight + 0.90 * sprint_blend) * swing_mult;
+        let knee_stance_peak = (0.90 * anim_weight + 1.30 * sprint_blend) * swing_mult;
+        let knee_stance_flex = 0.06 * anim_weight + 0.10 * sprint_blend;
 
-        let ankle_dorsiflex = (0.20 * anim_weight + 0.15 * sprint_blend) * swing_mult;
-        let ankle_plantarflex = (-0.35 * anim_weight - 0.30 * sprint_blend) * swing_mult;
+        let knee_stance_min = if is_crouching { 0.55 } else { knee_stance_flex };
 
-        let thigh_pitch = |s: f32| -> f32 {
-            let base_pitch = if s >= 0.0 {
-                -s * hip_fwd
-            } else {
-                -s * hip_back
-            };
+        // Ankle: a real foot goes through heel-strike (dorsiflexed) → foot-flat
+        // → toe-off (plantarflexed) during stance, and neutral/slightly dorsiflexed
+        // during swing for ground clearance.
+        let ankle_heel_strike = 0.20 * anim_weight + 0.15 * sprint_blend;
+        let ankle_toe_off = 0.45 * anim_weight + 0.55 * sprint_blend;
+        let ankle_swing_dorsi = 0.20 * anim_weight + 0.25 * sprint_blend;
+
+        // Thigh pitch: driven by cos(phase) so the extremes land at heel-strike
+        // (forward, c=+1) and toe-off (back, c=-1). Mid-swing and mid-stance
+        // pass through vertical (c=0). Combined with the knee/ankle below, this
+        // gives the leg a "\" silhouette at heel-strike and a "_/" silhouette
+        // through mid/late stance.
+        let thigh_pitch = |_s: f32, c: f32| -> f32 {
+            let amp = if c >= 0.0 { hip_fwd } else { hip_back };
+            let base_pitch = -c * amp;
             if is_crouching {
                 base_pitch + 0.42
             } else {
@@ -378,30 +418,45 @@ pub fn animate_limbs(
             }
         };
 
-        let knee_bend = |s: f32, c: f32| -> f32 {
-            let swing = (-c).max(0.0) * knee_swing_peak;
-
-            let in_toe_off_zone = ((-s).clamp(0.0, 1.0)) * ((1.0 - c.abs()).max(0.0));
-            let toe_off = in_toe_off_zone * knee_toe_off;
-
-            (swing + toe_off).max(knee_stance_min)
+        // Knee bend: a "double bell" peaking at s=+1 (mid-swing) and s=-1
+        // (mid-stance). |s| is already a natural bell peaking at ±1 with zeros
+        // at s=0, so we just shape it with a power < 1 (fast rise, flat top).
+        //   s = 0  (heel-strike / toe-off): bend ≈ 0 → leg straight ("\" / push-off)
+        //   s = +1 (mid-swing):              bend = peak → knee drives up
+        //   s = -1 (mid-stance):             bend = peak → shin hangs horizontal ("_/")
+        let knee_bend = |s: f32, _c: f32| -> f32 {
+            let raw = s.abs().powf(0.7);
+            if s >= 0.0 {
+                raw * knee_swing_peak
+            } else {
+                // Small constant flex on top of the bell so the stance leg
+                // isn't perfectly straight at the transitions.
+                (raw * knee_stance_peak + knee_stance_flex * 0.4).max(knee_stance_min)
+            }
         };
 
+        // Ankle pitch: heel-strike (early stance) → foot-flat (mid stance) →
+        // toe-off (late stance) → neutral (swing).
         let ankle_pitch = |s: f32, c: f32| -> f32 {
-            let stretch = -(s * s) * ankle_plantarflex.abs();
-
-            let in_toe_off = (-s).clamp(0.0, 1.0) * c.max(0.0);
-            let pull_up = in_toe_off * ankle_dorsiflex;
-
-            let crouch_ankle_offset = 0.0;
-            stretch + pull_up + crouch_ankle_offset
+            if s >= 0.0 {
+                // Swing: keep foot slightly dorsiflexed (toes up) so the toes
+                // clear the ground. Tilt up further at the very end of swing
+                // (c≈+1, heel-strike) for a natural landing prep.
+                ankle_swing_dorsi * s + 0.15 * sprint_blend * c.max(0.0)
+            } else {
+                // Stance: heel-strike has the foot angled up (dorsiflexed),
+                // then rolls flat, then pushes off on the toes (plantarflexed).
+                let stance_progress = -s; // 0..1 across stance
+                // Bell-curve toe-off peaking near the end of stance.
+                let toe_off = (stance_progress * std::f32::consts::PI).sin() * ankle_toe_off;
+                // Initial heel-strike dorsiflexion fades out.
+                let heel_strike = (1.0 - stance_progress).powi(2) * ankle_heel_strike;
+                toe_off + heel_strike
+            }
         };
-
-        let ls = phase.sin();
-        let lc = phase.cos();
 
         if let Some(mut tf) = l_thigh.iter_mut().next() {
-            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, thigh_pitch(ls), splay);
+            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, thigh_pitch(ls, lc), splay_amp);
         }
         if let Some(mut tf) = l_shin.iter_mut().next() {
             tf.rotation = Quat::from_rotation_x(-knee_bend(ls, lc));
@@ -410,11 +465,8 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_rotation_x(ankle_pitch(ls, lc));
         }
 
-        let rs = (phase + std::f32::consts::PI).sin();
-        let rc = (phase + std::f32::consts::PI).cos();
-
         if let Some(mut tf) = r_thigh.iter_mut().next() {
-            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, thigh_pitch(rs), -splay);
+            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, thigh_pitch(rs, rc), -splay_amp);
         }
         if let Some(mut tf) = r_shin.iter_mut().next() {
             tf.rotation = Quat::from_rotation_x(-knee_bend(rs, rc));
@@ -423,29 +475,61 @@ pub fn animate_limbs(
             tf.rotation = Quat::from_rotation_x(ankle_pitch(rs, rc));
         }
 
+        // Arms swing in antiphase to the same-side leg (left arm forward when
+        // right leg is forward). Humans naturally bend the elbow more when
+        // the arm swings forward (carrying motion) and straighten it on the
+        // back-swing.
         let upper_hang = if is_crouching { 0.12 } else { 0.08 };
         let forearm_hang = if is_crouching { 0.28 } else { 0.18 };
 
-        let forearm_base = forearm_hang + 0.15 * anim_weight + 0.25 * sprint_blend;
-        let swing_range = (0.18 * anim_weight + 0.42 * sprint_blend) * swing_mult;
-        let forearm_sweep = (0.35 * anim_weight + 0.70 * sprint_blend) * swing_mult;
+        let swing_range = (0.30 * anim_weight + 0.55 * sprint_blend) * swing_mult;
+        let forearm_swing_amp = (0.20 * anim_weight + 0.45 * sprint_blend) * swing_mult;
+        let forearm_base = forearm_hang + 0.05 * anim_weight + 0.10 * sprint_blend;
 
-        let la_s = -phase.sin();
+        // Left arm antiphase to left leg.
+        let la_s = -ls;
         if let Some(mut tf) = l_upper_arm.iter_mut().next() {
-            let pitch = upper_hang + la_s * swing_range;
-            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, pitch, 0.06 * anim_weight);
+            // Smooth, slightly skewed swing using a power curve to mimic the
+            // pendulum's natural ease-in/ease-out.
+            let swing_norm = if la_s >= 0.0 {
+                la_s.powf(0.85)
+            } else {
+                -(-la_s).powf(0.85)
+            };
+            let pitch = upper_hang + swing_norm * swing_range;
+            // Slight outward swing of the elbow (z-rotation) when arm goes back.
+            let roll = -0.04 * anim_weight * la_s.max(0.0);
+            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, pitch, roll);
         }
         if let Some(mut tf) = l_forearm.iter_mut().next() {
-            tf.rotation = Quat::from_rotation_x(forearm_base + la_s * forearm_sweep);
+            // Elbow bends more on forward swing (carrying motion).
+            let elbow_bend = if la_s >= 0.0 {
+                la_s * forearm_swing_amp
+            } else {
+                0.0
+            };
+            tf.rotation = Quat::from_rotation_x(forearm_base + elbow_bend);
         }
 
-        let ra_s = phase.sin();
+        // Right arm antiphase to right leg.
+        let ra_s = -rs;
         if let Some(mut tf) = r_upper_arm.iter_mut().next() {
-            let pitch = upper_hang + ra_s * swing_range;
-            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, pitch, -(0.06 * anim_weight));
+            let swing_norm = if ra_s >= 0.0 {
+                ra_s.powf(0.85)
+            } else {
+                -(-ra_s).powf(0.85)
+            };
+            let pitch = upper_hang + swing_norm * swing_range;
+            let roll = 0.04 * anim_weight * ra_s.max(0.0);
+            tf.rotation = Quat::from_euler(EulerRot::YXZ, 0.0, pitch, roll);
         }
         if let Some(mut tf) = r_forearm.iter_mut().next() {
-            tf.rotation = Quat::from_rotation_x(forearm_base + ra_s * forearm_sweep);
+            let elbow_bend = if ra_s >= 0.0 {
+                ra_s * forearm_swing_amp
+            } else {
+                0.0
+            };
+            tf.rotation = Quat::from_rotation_x(forearm_base + elbow_bend);
         }
     } else {
         let vertical_speed = velocity.0.y;
