@@ -12,6 +12,7 @@ use super::{
 use crate::world::world_manager::{Player, WorldManager};
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct PlayerPlugin;
 
@@ -65,8 +66,14 @@ fn spawn_player(
     mut materials: ResMut<Assets<StandardMaterial>>,
     world: Res<WorldManager>,
 ) {
-    let ground_y = world.generator.spawn_height_at(0.0, 0.0) as f32;
-    let spawn_position = Vec3::new(0.0, ground_y + 1.0, 0.0);
+    let seed = SystemTime::now()
+    .duration_since(UNIX_EPOCH)
+    .unwrap()
+    .as_nanos() as u64;
+
+    let (spawn_x, spawn_z) = world.generator.find_spawn(seed);
+    let ground_y = world.generator.surface_y(spawn_x, spawn_z) as f32 + 1.0;
+    let spawn_position = Vec3::new(spawn_x as f32 + 0.5, ground_y, spawn_z as f32 + 0.5);
     let camera_target = spawn_position + Vec3::Y * 1.1;
 
     let skin = materials.add(StandardMaterial {

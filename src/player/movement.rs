@@ -71,14 +71,7 @@ pub struct AirborneTimer(pub f32);
 pub struct Crouching(pub bool);
 
 fn block_ground_y(world: &WorldManager, x: f32, z: f32) -> f32 {
-    let bx = x.floor() as f64;
-    let bz = z.floor() as f64;
-    let surface = if bx * bx + bz * bz <= 40.0 * 40.0 {
-        world.generator.spawn_height_at(bx, bz)
-    } else {
-        world.generator.height_at(bx, bz)
-    };
-    surface.floor() as f32 + 1.0
+    world.generator.surface_y(x.floor() as i32, z.floor() as i32) as f32 + 1.0
 }
 
 pub fn player_movement(
