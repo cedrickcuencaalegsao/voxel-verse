@@ -1,10 +1,10 @@
+use crate::lobby::plugin::saves_dir;
 use crate::utils::constants::CHUNK_VOLUME;
 use crate::world::block::{Block, BlockKind};
 use crate::world::chunk::Chunk;
 use bevy::math::IVec3;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize)]
 pub struct ChunkData {
@@ -41,7 +41,8 @@ impl ChunkData {
 }
 
 pub fn save_chunk(world_name: &str, chunk: &Chunk) -> std::io::Result<()> {
-    let dir = PathBuf::from("world/saves").join(world_name).join("chunks");
+    // ~/.voxelverseworld/<world_name>/chunks
+    let dir = saves_dir().join(world_name).join("chunks");
     fs::create_dir_all(&dir)?;
     let filename = format!(
         "{}_{}_{}.bin",

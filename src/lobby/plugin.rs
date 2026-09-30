@@ -10,7 +10,22 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const SAVES_DIR: &str = "world/saves";
+const SAVES_DIR_NAME: &str = ".voxelverseworld";
+
+/// Where all worlds are stored: `~/.voxelverseworld` on macOS/Linux and
+/// `C:\Users\<name>\.voxelverseworld` on Windows. Falls back to a folder next
+/// to the game if the home directory can't be found.
+pub fn saves_dir() -> PathBuf {
+    let home = if cfg!(windows) {
+        std::env::var_os("USERPROFILE")
+    } else {
+        std::env::var_os("HOME")
+    };
+    match home {
+        Some(h) => PathBuf::from(h).join(SAVES_DIR_NAME),
+        None => PathBuf::from(SAVES_DIR_NAME),
+    }
+}
 
 /// The generation animation runs at least this long.
 const GENERATION_SECONDS: f32 = 3.0;
@@ -233,7 +248,7 @@ fn create_world(raw_name: &str, mode: GameMode) -> (String, u32) {
         cleaned.trim().to_string()
     };
 
-    let root = PathBuf::from(SAVES_DIR);
+    let root = saves_dir();
     let mut name = base.clone();
     let mut n = 2;
     while root.join(&name).exists() {
@@ -261,10 +276,10 @@ fn create_world(raw_name: &str, mode: GameMode) -> (String, u32) {
     (name, seed)
 }
 
-/// Every folder in world/saves as (name, seed, multiplayer). Worlds without a
+/// Every folder in the saves directory as (name, seed, multiplayer). Worlds without a
 /// seed.txt fall back to seed 42; without a mode.txt they're single player.
 pub(super) fn list_worlds() -> Vec<(String, u32, bool)> {
-    let Ok(entries) = fs::read_dir(SAVES_DIR) else {
+    let Ok(entries) = fs::read_dir(saves_dir()) else {
         return Vec::new();
     };
     let mut worlds: Vec<(String, u32, bool)> = entries
