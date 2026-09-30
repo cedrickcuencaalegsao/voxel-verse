@@ -5,9 +5,9 @@ use super::{
 };
 use bevy::prelude::*;
 
-pub(super) const NORMAL: Color = Color::srgb(0.20, 0.22, 0.30);
-pub(super) const HOVER: Color = Color::srgb(0.30, 0.34, 0.48);
-pub(super) const SELECTED: Color = Color::srgb(0.25, 0.50, 0.35);
+pub(super) const NORMAL: Color = Color::srgb(0.12, 0.25, 0.14);
+pub(super) const HOVER: Color = Color::srgb(0.20, 0.38, 0.22);
+pub(super) const SELECTED: Color = Color::srgb(0.42, 0.72, 0.28);
 
 pub(super) const NAME_MAX_LEN: usize = 24;
 
@@ -27,7 +27,7 @@ pub(super) fn rebuild_page(
     commands
         .spawn((
             Node {
-                width: Val::Percent(100.0),
+                width: Val::Percent(50.0), // menu on the left half; the island is on the right
                 height: Val::Percent(100.0),
                 flex_direction: FlexDirection::Column,
                 justify_content: JustifyContent::Center,
@@ -35,7 +35,7 @@ pub(super) fn rebuild_page(
                 row_gap: Val::Px(12.0),
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.07, 0.08, 0.12)),
+            // No BackgroundColor: the 3D scene shows through.
             LobbyPanel,
         ))
         .with_children(|root| match *page {
@@ -71,12 +71,12 @@ fn new_adventure_page(p: &mut ChildSpawnerCommands, form: &NewAdventureForm) {
             align_items: AlignItems::Center,
             ..default()
         },
-        BackgroundColor(Color::srgb(0.12, 0.13, 0.19)),
+        BackgroundColor(Color::srgb(0.06, 0.14, 0.08)),
     ))
     .with_children(|b| {
         if form.name.is_empty() {
             cursor(b);
-            label_colored(b, " Type a name...", 22.0, Color::srgb(0.5, 0.5, 0.55));
+            label_colored(b, " Type a name...", 22.0, Color::srgb(0.55, 0.65, 0.55));
         } else {
             label(b, &form.name, 22.0);
             cursor(b);

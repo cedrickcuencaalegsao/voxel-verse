@@ -1,6 +1,6 @@
 use super::{
-    pages, AppState, GameMode, GameSettings, Generation, LobbyAction, LobbyPage, LobbyPanel,
-    NameCursor, NewAdventureForm, ProgressFill, Selected, StatusText,
+    pages, scene, AppState, GameMode, GameSettings, Generation, LobbyAction, LobbyPage,
+    LobbyPanel, LobbyScene, NameCursor, NewAdventureForm, ProgressFill, Selected, StatusText,
 };
 use crate::world::world_manager::WorldManager;
 use bevy::input::keyboard::{Key, KeyboardInput};
@@ -33,9 +33,6 @@ const GENERATION_SECONDS: f32 = 3.0;
 /// Cursor blinks this many times per second.
 const CURSOR_BLINKS_PER_SECOND: f32 = 2.0;
 
-#[derive(Component)]
-struct LobbyCamera;
-
 pub struct LobbyPlugin;
 
 impl Plugin for LobbyPlugin {
@@ -43,7 +40,10 @@ impl Plugin for LobbyPlugin {
         app.init_state::<AppState>()
             .init_resource::<GameSettings>()
             .init_resource::<NewAdventureForm>()
-            .add_systems(OnEnter(AppState::Lobby), enter_lobby)
+            .add_systems(
+                OnEnter(AppState::Lobby),
+                (enter_lobby, scene::spawn_lobby_scene),
+            )
             .add_systems(OnExit(AppState::Lobby), exit_lobby)
             .add_systems(
                 Update,
@@ -53,6 +53,7 @@ impl Plugin for LobbyPlugin {
                     name_input.run_if(resource_exists_and_equals(LobbyPage::NewAdventure)),
                     blink_cursor.run_if(resource_exists_and_equals(LobbyPage::NewAdventure)),
                     animate_generation.run_if(resource_exists::<Generation>),
+                    scene::animate_scene,
                 )
                     .chain()
                     .run_if(in_state(AppState::Lobby)),
@@ -61,17 +62,17 @@ impl Plugin for LobbyPlugin {
 }
 
 fn enter_lobby(mut commands: Commands) {
-    commands.spawn((Camera2d, LobbyCamera));
+    // The 3D camera comes from `scene::spawn_lobby_scene`.
     // Inserting the resource counts as a change, which builds the first page.
     commands.insert_resource(LobbyPage::Main);
 }
 
 fn exit_lobby(
     mut commands: Commands,
-    query: Query<Entity, Or<(With<LobbyPanel>, With<LobbyCamera>)>>,
+    query: Query<Entity, Or<(With<LobbyPanel>, With<LobbyScene>)>>,
 ) {
     for entity in &query {
-        commands.entity(entity).despawn();
+        commands.entity(entity).despawn(); // recursive: island children go too
     }
 }
 

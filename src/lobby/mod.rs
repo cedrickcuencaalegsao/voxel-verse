@@ -1,5 +1,6 @@
 mod pages;
 pub mod plugin;
+mod scene;
 
 use crate::utils::constants::RENDER_DISTANCE;
 use bevy::prelude::*;
@@ -64,6 +65,11 @@ impl Default for GameSettings {
 /// Marker for the root UI node of the current lobby page.
 #[derive(Component)]
 pub struct LobbyPanel;
+
+/// Marks everything that belongs to the 3D lobby backdrop
+/// (camera, lights, island, character) so it can be despawned together.
+#[derive(Component)]
+pub struct LobbyScene;
 
 /// Marks a button as the currently selected option (keeps its highlight).
 #[derive(Component)]
