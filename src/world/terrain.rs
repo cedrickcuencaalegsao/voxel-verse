@@ -38,6 +38,37 @@ impl TerrainGenerator {
         }
     }
 
+    /// Y of the top solid block in this column (same rule block_at uses).
+    pub fn surface_y(&self, world_x: i32, world_z: i32) -> i32 {
+        self.height_at(world_x as f64, world_z as f64) as i32
+    }
+
+    /// Picks a random dry, non-mountain column without a tree on it.
+    pub fn find_spawn(&self, seed: u64) -> (i32, i32) {
+        // splitmix64: small dependency-free RNG
+        let mut state = seed;
+        let mut next = || {
+            state = state.wrapping_add(0x9E3779B97F4A7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+            z ^ (z >> 31)
+        };
+
+        for _ in 0..200 {
+            let x = (next() % 2001) as i32 - 1000;
+            let z = (next() % 2001) as i32 - 1000;
+            let y = self.surface_y(x, z);
+
+            let dry = y > SEA_LEVEL + 2; // above the sand band
+            let not_peak = y < SEA_LEVEL + 40; // plains or hills, not mountain tops
+            if dry && not_peak && !self.should_spawn_tree(x, z) {
+                return (x, z);
+            }
+        }
+        (0, 0) // fallback if nothing suitable was found
+    }
+
     fn fbm(&self, x: f64, z: f64, octaves: u32, scale: f64) -> f64 {
         let mut value = 0.0_f64;
         let mut amplitude = 1.0_f64;
@@ -160,7 +191,7 @@ impl TerrainGenerator {
             return self.spawn_block_at(world_x, world_y, world_z);
         }
 
-        let surface_height = self.height_at(world_x as f64, world_z as f64) as i32;
+        let surface_height = self.surface_y(world_x, world_z);
 
         if world_y > surface_height {
             return Block {

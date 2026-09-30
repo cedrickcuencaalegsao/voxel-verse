@@ -82,68 +82,105 @@ fn put(buf: &mut [u8], x: u32, y: u32, pixel: [u8; 4]) {
 
 // ── Block texture generators ──────────────────────────────────────────────────
 
-/// Stone — uniform grey with blocky noise patches.
+/// Stone — uniform grey with blocky noise patches plus sparse mineral flecks.
 pub fn gen_stone() -> Vec<u8> {
     const S: u64 = 0xAAAA_1111_BBBB_2222;
+    const S_FLECK: u64 = 0x1919_8181_2020_9090; // sparse pixel-level flecks
     let mut buf = blank_tile();
     for y in 0..TILE_SIZE {
         for x in 0..TILE_SIZE {
-            put(
-                &mut buf,
-                x,
-                y,
-                vary([120, 120, 120], cluster_noise(x, y, S), 40),
-            );
+            let mut pixel = vary([120, 120, 120], cluster_noise(x, y, S), 40);
+            // A sparse single-pixel fleck layer on top of the blocky base
+            // noise so stone reads as speckled rock instead of flat grey
+            // squares. Thresholds are chosen so flecks stay rare (~4% of
+            // pixels combined).
+            let fleck = pixel_noise(x, y, S_FLECK);
+            if fleck > 245 {
+                pixel = [200, 200, 205, 255]; // bright quartz-like fleck
+            } else if fleck < 10 {
+                pixel = [70, 70, 75, 255]; // dark mineral fleck
+            }
+            put(&mut buf, x, y, pixel);
         }
     }
     buf
 }
 
-/// Dirt — warm brown with slightly darker cluster patches.
+/// Dirt — warm brown with slightly darker cluster patches plus sparse
+/// pebble/root flecks.
 pub fn gen_dirt() -> Vec<u8> {
     const S: u64 = 0xCCCC_3333_DDDD_4444;
+    const S_PEBBLE: u64 = 0x7777_1212_8888_3434;
     let mut buf = blank_tile();
     for y in 0..TILE_SIZE {
         for x in 0..TILE_SIZE {
-            put(
-                &mut buf,
-                x,
-                y,
-                vary([110, 70, 40], cluster_noise(x, y, S), 35),
-            );
+            let mut pixel = vary([110, 70, 40], cluster_noise(x, y, S), 35);
+            // A sparse single-pixel darker fleck layer (small pebbles /
+            // root bits) so dirt doesn't read as a flat blocky wash.
+            if pixel_noise(x, y, S_PEBBLE) > 250 {
+                pixel = [80, 55, 30, 255];
+            }
+            put(&mut buf, x, y, pixel);
         }
     }
     buf
 }
 
-/// Grass top — bright green with subtle cluster variation.
+/// Grass top — bright green with cluster variation, per-column blade
+/// streaks, and coarse moss/shadow patches for a less flat, less
+/// obviously-tiled look.
 pub fn gen_grass_top() -> Vec<u8> {
     const S: u64 = 0xEEEE_5555_FFFF_6666;
+    const S_BLADE: u64 = 0x2727_9595_4646_ABAB; // per-column blade tone
+    const S_PATCH: u64 = 0x6262_1414_D2D2_0808; // coarse moss/shadow patches
     let mut buf = blank_tile();
     for y in 0..TILE_SIZE {
         for x in 0..TILE_SIZE {
-            put(
-                &mut buf,
-                x,
-                y,
-                vary([34, 180, 34], cluster_noise(x, y, S), 30),
-            );
+            let mut pixel = vary([34, 180, 34], cluster_noise(x, y, S), 30);
+
+            // Thin vertical blade streaks: shift green per-column (not
+            // per-pixel) so the top reads as individual grass blades
+            // rather than a uniform wash.
+            let blade_shift = pixel_noise(x, 0, S_BLADE) as i32 / 32 - 4; // -4..+3
+            pixel[1] = sat(pixel[1] as i32 + blade_shift);
+
+            // Occasional darker moss/shadow patches, coarser than the base
+            // cluster noise (double-wide clusters), to break up repetition
+            // at a glance rather than every 4px.
+            if cluster_noise(x / 2, y / 2, S_PATCH) > 235 {
+                pixel = vary([22, 130, 22], pixel_noise(x, y, S), 12);
+            }
+
+            put(&mut buf, x, y, pixel);
         }
     }
     buf
 }
 
 /// Grass side — a green cap (~1/6 of height) blending into dirt below.
-/// The dirt seed matches `gen_dirt` so the seam looks natural.
+/// The dirt seed matches `gen_dirt` so the seam looks natural. The cap
+/// height now jitters per-column and gets a one-row shadowed transition,
+/// giving the classic torn/jagged grass-over-dirt silhouette instead of a
+/// razor-straight cut.
 pub fn gen_grass_side() -> Vec<u8> {
     const S_G: u64 = 0xABCD_1234_EF01_5678;
     const S_D: u64 = 0xCCCC_3333_DDDD_4444; // intentionally matches gen_dirt
-    let cap = TILE_SIZE / 6; // ≈ 10–11 px green band at the top
+    const S_EDGE: u64 = 0x4242_ABAB_1313_C4C4; // per-column cap jitter
+    let base_cap = TILE_SIZE / 6; // ≈ 10–11 px green band at the top
     let mut buf = blank_tile();
-    for y in 0..TILE_SIZE {
-        for x in 0..TILE_SIZE {
+    for x in 0..TILE_SIZE {
+        // Per-column jitter (±2px) on the cap height so the seam reads as
+        // jagged grass blades hanging over the dirt, not a straight cut.
+        let jitter = (pixel_noise(x, 0, S_EDGE) % 5) as i32 - 2;
+        let cap = (base_cap as i32 + jitter).clamp(2, TILE_SIZE as i32 / 3) as u32;
+        for y in 0..TILE_SIZE {
             let pixel = if y < cap {
                 vary([34, 180, 34], cluster_noise(x, y, S_G), 25)
+            } else if y < cap + 2 {
+                // Shadowed transition lip right under the jagged edge, so
+                // the grass/dirt swap isn't an abrupt hard-edged colour
+                // change.
+                vary([70, 110, 40], cluster_noise(x, y, S_G), 20)
             } else {
                 vary([110, 70, 40], cluster_noise(x, y, S_D), 30)
             };
@@ -153,15 +190,21 @@ pub fn gen_grass_side() -> Vec<u8> {
     buf
 }
 
-/// Sand — warm beige with layered coarse + fine grain.
+/// Sand — warm beige with layered coarse + fine grain, plus sparse darker
+/// grain specks.
 pub fn gen_sand() -> Vec<u8> {
     const SC: u64 = 0x1122_AABB_3344_CCDD;
     const SF: u64 = 0x5566_EEFF_7788_0011;
+    const SS: u64 = 0x9911_2233_4455_6677; // sparse dark grain specks
     let mut buf = blank_tile();
     for y in 0..TILE_SIZE {
         for x in 0..TILE_SIZE {
             let v = cluster_noise(x, y, SC) / 2 + pixel_noise(x, y, SF) / 2;
-            put(&mut buf, x, y, vary([220, 210, 120], v, 25));
+            let mut pixel = vary([220, 210, 120], v, 25);
+            if pixel_noise(x, y, SS) > 250 {
+                pixel = [180, 165, 90, 255];
+            }
+            put(&mut buf, x, y, pixel);
         }
     }
     buf
@@ -227,15 +270,21 @@ pub fn gen_leaves() -> Vec<u8> {
     buf
 }
 
-/// Bedrock — near-black with coarse + fine irregular veins.
+/// Bedrock — near-black with coarse + fine irregular veins, plus sparse
+/// pale mineral speckle.
 pub fn gen_bedrock() -> Vec<u8> {
     const SC: u64 = 0x0000_DEAD_BEEF_0000;
     const SF: u64 = 0x1111_2222_3333_4444;
+    const SS: u64 = 0x8888_4444_2222_1111; // sparse speckle
     let mut buf = blank_tile();
     for y in 0..TILE_SIZE {
         for x in 0..TILE_SIZE {
             let v = cluster_noise(x, y, SC) / 2 + pixel_noise(x, y, SF) / 2;
-            put(&mut buf, x, y, vary([40, 40, 40], v, 30));
+            let mut pixel = vary([40, 40, 40], v, 30);
+            if pixel_noise(x, y, SS) > 252 {
+                pixel = [90, 90, 95, 255];
+            }
+            put(&mut buf, x, y, pixel);
         }
     }
     buf

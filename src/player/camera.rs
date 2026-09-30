@@ -1,9 +1,12 @@
 use crate::world::world_manager::Player;
+use bevy::camera::visibility::RenderLayers;
 use bevy::{
     input::mouse::AccumulatedMouseMotion,
     prelude::*,
     window::{CursorGrabMode, CursorOptions, PrimaryWindow},
 };
+
+use super::movement::{Head, Torso};
 
 #[derive(Component)]
 pub struct PlayerCamera {
@@ -28,8 +31,8 @@ impl Default for PlayerCamera {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
-    ThirdPersonBack,  // default Minecraft-style view, camera behind the player
-    ThirdPersonFront, // "selfie" view, camera in front looking back
+    ThirdPersonBack,
+    ThirdPersonFront,
     FirstPerson,
 }
 
@@ -45,9 +48,7 @@ pub fn grab_cursor(mut cursor_options: Query<&mut CursorOptions, With<PrimaryWin
     }
 }
 
-/// Automatically re-grabs the cursor if the player clicks the window.
-/// This prevents the cursor lock from being permanently lost when entering fullscreen
-/// or when alt-tabbing.
+/// Re-grabs cursor when player clicks the window.
 pub fn handle_cursor_auto_grab(
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
@@ -62,7 +63,7 @@ pub fn handle_cursor_auto_grab(
     }
 }
 
-/// Escape frees the cursor; pressing it again re-locks it.
+/// Escape frees the cursor; pressing again re-locks it.
 pub fn toggle_cursor_grab(
     keys: Res<ButtonInput<KeyCode>>,
     mut cursor_options: Query<&mut CursorOptions, With<PrimaryWindow>>,
@@ -83,7 +84,7 @@ pub fn toggle_cursor_grab(
     }
 }
 
-/// Tab cycles: behind player -> in front of player -> first person -> behind player.
+/// Tab cycles: behind → front → first person → behind.
 pub fn cycle_camera_view(
     keys: Res<ButtonInput<KeyCode>>,
     mut camera_query: Query<&mut PlayerCamera>,
@@ -105,13 +106,26 @@ pub fn player_look(
     mouse_motion: Res<AccumulatedMouseMotion>,
     cursor_options: Query<&CursorOptions, With<PrimaryWindow>>,
     mut player_query: Query<&mut Transform, With<Player>>,
-    mut camera_query: Query<(&mut Transform, &mut PlayerCamera), Without<Player>>,
-    mut body_query: Query<&mut Visibility, With<PlayerBody>>,
+    mut camera_query: Query<
+        (&mut Transform, &mut PlayerCamera, &mut RenderLayers),
+        Without<Player>,
+    >,
+    torso_query: Query<&Transform, (With<Torso>, Without<Player>, Without<PlayerCamera>)>,
+    head_joint_query: Query<
+        &Transform,
+        (
+            With<Head>,
+            Without<Player>,
+            Without<PlayerCamera>,
+            Without<Torso>,
+        ),
+    >,
 ) {
     let Ok(mut player_transform) = player_query.single_mut() else {
         return;
     };
-    let Ok((mut camera_transform, mut camera)) = camera_query.single_mut() else {
+    let Ok((mut camera_transform, mut camera, mut camera_layers)) = camera_query.single_mut()
+    else {
         return;
     };
 
@@ -128,7 +142,16 @@ pub fn player_look(
         }
     }
 
-    let target = player_transform.translation + Vec3::Y * camera.target_height;
+    // Determine target height dynamically from relative torso/head heights (for natural bobs/crouching)
+    let mut eye_height = camera.target_height;
+    if let Some(torso_tf) = torso_query.iter().next() {
+        if let Some(head_tf) = head_joint_query.iter().next() {
+            // Torso root height + local Head height + center-of-head visual height offset
+            eye_height = torso_tf.translation.y + head_tf.translation.y + 0.19;
+        }
+    }
+
+    let target = player_transform.translation + Vec3::Y * eye_height;
     let look_rotation = player_transform.rotation * Quat::from_rotation_x(camera.pitch);
 
     match camera.mode {
@@ -148,11 +171,13 @@ pub fn player_look(
         }
     }
 
-    if let Ok(mut visibility) = body_query.single_mut() {
-        *visibility = if camera.mode == CameraMode::FirstPerson {
-            Visibility::Hidden
-        } else {
-            Visibility::Visible
-        };
+    // Update active camera layers depending on First-Person or Third-Person status
+    if camera.mode == CameraMode::FirstPerson {
+        // Only render Layer 0 (World, limbs, torso). Head/hair meshes on Layer 1 are ignored,
+        // completely preventing them from clipping in FPP, yet they continue casting shadows.
+        *camera_layers = RenderLayers::layer(0);
+    } else {
+        // Render both Layer 0 and Layer 1 so the character is fully visible in Third-Person
+        *camera_layers = RenderLayers::layer(0).with(1);
     }
 }

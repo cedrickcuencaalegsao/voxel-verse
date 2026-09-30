@@ -6,6 +6,7 @@ use crate::player::controller::PlayerPlugin;
 use crate::rendering::plugin::RenderingPlugin;
 use crate::ui::plugin::UiPlugin;
 use crate::world::plugin::WorldPlugin;
+use crate::lobby::plugin::LobbyPlugin;
 use bevy::app::PluginGroupBuilder;
 use bevy::prelude::*;
 
@@ -22,5 +23,6 @@ impl PluginGroup for VoxelVersePlugins {
             .add(EnvironmentPlugin)
             .add(NetworkingPlugin)
             .add(startup::StartupPlugin)
+            .add(LobbyPlugin)
     }
 }
