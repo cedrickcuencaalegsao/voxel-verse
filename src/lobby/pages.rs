@@ -1,15 +1,23 @@
 use super::plugin::list_worlds;
-use super::{GameSettings, LobbyAction, LobbyPage, LobbyPanel};
+use super::{
+    GameMode, GameSettings, Generation, LobbyAction, LobbyPage, LobbyPanel, NameCursor,
+    NewAdventureForm, ProgressFill, Selected, StatusText,
+};
 use bevy::prelude::*;
 
 pub(super) const NORMAL: Color = Color::srgb(0.20, 0.22, 0.30);
 pub(super) const HOVER: Color = Color::srgb(0.30, 0.34, 0.48);
+pub(super) const SELECTED: Color = Color::srgb(0.25, 0.50, 0.35);
+
+pub(super) const NAME_MAX_LEN: usize = 24;
 
 /// Despawns the old page and builds the one in `LobbyPage`.
 pub(super) fn rebuild_page(
     mut commands: Commands,
     page: Res<LobbyPage>,
     settings: Res<GameSettings>,
+    form: Res<NewAdventureForm>,
+    generation: Option<Res<Generation>>,
     old: Query<Entity, With<LobbyPanel>>,
 ) {
     for entity in &old {
@@ -32,6 +40,8 @@ pub(super) fn rebuild_page(
         ))
         .with_children(|root| match *page {
             LobbyPage::Main => main_page(root),
+            LobbyPage::NewAdventure => new_adventure_page(root, &form),
+            LobbyPage::Generating => generating_page(root, generation.as_deref()),
             LobbyPage::Worlds => worlds_page(root),
             LobbyPage::Market => market_page(root),
             LobbyPage::Settings => settings_page(root, &settings),
@@ -42,21 +52,119 @@ fn main_page(p: &mut ChildSpawnerCommands) {
     label(p, "Voxel Verse", 56.0);
     spacer(p);
     button(p, "New Adventure", LobbyAction::NewAdventure);
-    button(p, "Worlds", LobbyAction::GoTo(LobbyPage::Worlds));
+    button(p, "Recent Adventures", LobbyAction::GoTo(LobbyPage::Worlds));
     button(p, "Market", LobbyAction::GoTo(LobbyPage::Market));
     button(p, "Settings", LobbyAction::GoTo(LobbyPage::Settings));
 }
 
+fn new_adventure_page(p: &mut ChildSpawnerCommands, form: &NewAdventureForm) {
+    label(p, "New Adventure", 40.0);
+    spacer(p);
+
+    label(p, "Adventure name", 20.0);
+    p.spawn((
+        Node {
+            width: Val::Px(340.0),
+            height: Val::Px(52.0),
+            flex_direction: FlexDirection::Row,
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BackgroundColor(Color::srgb(0.12, 0.13, 0.19)),
+    ))
+    .with_children(|b| {
+        if form.name.is_empty() {
+            cursor(b);
+            label_colored(b, " Type a name...", 22.0, Color::srgb(0.5, 0.5, 0.55));
+        } else {
+            label(b, &form.name, 22.0);
+            cursor(b);
+        }
+    });
+
+    spacer(p);
+    label(p, "Mode", 20.0);
+    button_with(
+        p,
+        "Single Player",
+        LobbyAction::SetMode(GameMode::SinglePlayer),
+        form.mode == GameMode::SinglePlayer,
+    );
+    button_with(
+        p,
+        "Multiplayer",
+        LobbyAction::SetMode(GameMode::Multiplayer),
+        form.mode == GameMode::Multiplayer,
+    );
+
+    spacer(p);
+    button(p, "Create Adventure", LobbyAction::CreateAdventure);
+    back_button(p);
+}
+
+fn generating_page(p: &mut ChildSpawnerCommands, generation: Option<&Generation>) {
+    label(p, "Generating World", 40.0);
+    if let Some(g) = generation {
+        label(p, &g.name, 24.0);
+    }
+    spacer(p);
+
+    // Progress bar: an outer track with an inner fill that grows.
+    p.spawn((
+        Node {
+            width: Val::Px(340.0),
+            height: Val::Px(14.0),
+            ..default()
+        },
+        BackgroundColor(NORMAL),
+    ))
+    .with_children(|bar| {
+        bar.spawn((
+            Node {
+                width: Val::Percent(0.0),
+                height: Val::Percent(100.0),
+                ..default()
+            },
+            BackgroundColor(SELECTED),
+            ProgressFill,
+        ));
+    });
+
+    p.spawn((
+        Text::new("Preparing"),
+        TextFont {
+            font_size: 20.0,
+            ..default()
+        },
+        TextColor(Color::WHITE),
+        StatusText,
+    ));
+}
+
 fn worlds_page(p: &mut ChildSpawnerCommands) {
-    label(p, "Your Worlds", 40.0);
+    label(p, "Recent Adventures", 40.0);
     spacer(p);
 
     let worlds = list_worlds();
     if worlds.is_empty() {
-        label(p, "No worlds yet. Start a new adventure!", 20.0);
+        label(p, "No adventures yet. Start a new one!", 20.0);
     }
-    for (name, seed) in worlds.into_iter().take(8) {
-        button(p, &format!("Play {name}"), LobbyAction::Play { name, seed });
+    for (name, seed, multiplayer) in worlds.into_iter().take(8) {
+        let text = if multiplayer {
+            format!("Play {name} (Multiplayer)")
+        } else {
+            format!("Play {name}")
+        };
+        button(
+            p,
+            &text,
+            LobbyAction::Play {
+                name,
+                seed,
+                multiplayer,
+            },
+        );
     }
 
     spacer(p);
@@ -98,18 +206,39 @@ fn spacer(p: &mut ChildSpawnerCommands) {
 }
 
 fn label(p: &mut ChildSpawnerCommands, text: &str, size: f32) {
+    label_colored(p, text, size, Color::WHITE);
+}
+
+fn label_colored(p: &mut ChildSpawnerCommands, text: &str, size: f32, color: Color) {
     p.spawn((
         Text::new(text),
         TextFont {
             font_size: size,
             ..default()
         },
+        TextColor(color),
+    ));
+}
+
+/// The blinking text cursor (blinked by `blink_cursor` in plugin.rs).
+fn cursor(p: &mut ChildSpawnerCommands) {
+    p.spawn((
+        Text::new("|"),
+        TextFont {
+            font_size: 22.0,
+            ..default()
+        },
         TextColor(Color::WHITE),
+        NameCursor,
     ));
 }
 
 fn button(p: &mut ChildSpawnerCommands, text: &str, action: LobbyAction) {
-    p.spawn((
+    button_with(p, text, action, false);
+}
+
+fn button_with(p: &mut ChildSpawnerCommands, text: &str, action: LobbyAction, selected: bool) {
+    let mut e = p.spawn((
         Button,
         Node {
             width: Val::Px(340.0),
@@ -118,8 +247,11 @@ fn button(p: &mut ChildSpawnerCommands, text: &str, action: LobbyAction) {
             align_items: AlignItems::Center,
             ..default()
         },
-        BackgroundColor(NORMAL),
+        BackgroundColor(if selected { SELECTED } else { NORMAL }),
         action,
-    ))
-    .with_children(|b| label(b, text, 22.0));
+    ));
+    if selected {
+        e.insert(Selected);
+    }
+    e.with_children(|b| label(b, text, 22.0));
 }
