@@ -7,6 +7,7 @@ mod rendering;
 mod ui;
 mod utils;
 mod world;
+mod lobby;
 
 fn main() {
     app::run();

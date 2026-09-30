@@ -10,6 +10,7 @@ use super::{
     },
 };
 use crate::world::world_manager::{Player, WorldManager};
+use crate::lobby::AppState;
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,7 +20,7 @@ pub struct PlayerPlugin;
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(MovementSettings::default())
-            .add_systems(Startup, (spawn_player, grab_cursor))
+            .add_systems(OnEnter(AppState::Playing), (spawn_player, grab_cursor))
             .add_systems(
                 Update,
                 (
@@ -29,9 +30,10 @@ impl Plugin for PlayerPlugin {
                     handle_cursor_auto_grab,
                     cycle_camera_view,
                     player_look,
-                    configure_light_shadow_layers, // Added system to make shadows work on Layer 1
+                    configure_light_shadow_layers,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(in_state(AppState::Playing)),
             );
     }
 }

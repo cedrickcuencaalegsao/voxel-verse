@@ -1,6 +1,7 @@
 use super::generator;
 use super::terrain::TerrainGenerator;
-use crate::utils::constants::{CHUNK_HEIGHT, CHUNK_SIZE, RENDER_DISTANCE};
+use crate::lobby::GameSettings;
+use crate::utils::constants::{CHUNK_HEIGHT, CHUNK_SIZE};
 use crate::utils::math::chunk_pos_to_idx;
 use crate::world::load::load_chunk;
 use crate::world::save::save_chunk;
@@ -11,16 +12,17 @@ use std::collections::HashMap;
 pub struct WorldManager {
     pub generator: TerrainGenerator,
     pub chunk_entities: HashMap<u64, Entity>,
+    pub name: String,
 }
 
 impl WorldManager {
-    pub fn new(seed: u32) -> Self {
+    pub fn new(seed: u32, name: String) -> Self {
         Self {
             generator: TerrainGenerator::new(seed),
             chunk_entities: HashMap::new(),
+            name,
         }
     }
-
 }
 
 /// Marker component for the player
@@ -31,9 +33,9 @@ pub struct Player;
 pub fn chunk_streaming_system(
     mut commands: Commands,
     mut world: ResMut<WorldManager>,
+    settings: Res<GameSettings>,
     player_query: Query<&Transform, With<Player>>,
 ) {
-    // Get the player position
     let player_transform = match player_query.iter().next() {
         Some(t) => t,
         None => return, // no player yet, do nothing
@@ -46,16 +48,16 @@ pub fn chunk_streaming_system(
         (player_pos.z / 16.0).floor() as i32,
     );
 
-    let radius = RENDER_DISTANCE;
+    let radius = settings.render_distance;
     let mut desired_chunks = Vec::new();
 
-    // Destructure WorldManager so we can borrow generator and chunk_entities separately
+    // Destructure so generator, chunk_entities and name can be borrowed separately
     let WorldManager {
         generator,
         chunk_entities,
+        name,
     } = &mut *world;
 
-    // Determine which chunks are missing
     for x in (player_chunk.x - radius)..=(player_chunk.x + radius) {
         for z in (player_chunk.z - radius)..=(player_chunk.z + radius) {
             let chunk_pos = IVec3::new(x, 0, z); // fixed height layer for now
@@ -66,13 +68,12 @@ pub fn chunk_streaming_system(
         }
     }
 
-    // Load or generate each missing chunk, then spawn it
     for chunk_pos in desired_chunks {
-        let chunk = match load_chunk("world_1", chunk_pos) {
+        let chunk = match load_chunk(name, chunk_pos) {
             Some(chunk) => chunk,
             None => {
                 let new_chunk = generator::generate_chunk(chunk_pos, generator);
-                if let Err(e) = save_chunk("world_1", &new_chunk) {
+                if let Err(e) = save_chunk(name, &new_chunk) {
                     eprintln!("Failed to save chunk: {}", e);
                 }
                 new_chunk
