@@ -5,7 +5,7 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 
-use super::texture_generator::{TILE_SIZE, generate_all_tiles};
+use super::texture::{TILE_SIZE, generate_all_tiles};
 use crate::world::block::BlockKind;
 
 pub const TILE_COUNT: u32 = 12; // was 9; +3 for CoalOre, IronOre, DiamondOre

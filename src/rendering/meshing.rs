@@ -12,12 +12,17 @@ use bevy::prelude::*;
 /// faces were getting back-face-culled.
 fn face_tangents(normal: [f32; 3]) -> (Vec3, Vec3) {
     match normal {
-        [1.0, 0.0, 0.0] => (Vec3::Y, Vec3::Z),  // +X
-        [-1.0, 0.0, 0.0] => (Vec3::Z, Vec3::Y), // -X
+        // Side faces: v is always +Y so the grass cap stays on top.
+        // u is chosen so u.cross(v) == outward normal (keeps winding correct).
+        [1.0, 0.0, 0.0] => (Vec3::NEG_Z, Vec3::Y), // +X
+        [-1.0, 0.0, 0.0] => (Vec3::Z, Vec3::Y),    // -X
+        [0.0, 0.0, 1.0] => (Vec3::X, Vec3::Y),     // +Z
+        [0.0, 0.0, -1.0] => (Vec3::NEG_X, Vec3::Y), // -Z
+
+        // Top / bottom: orientation doesn't matter visually.
         [0.0, 1.0, 0.0] => (Vec3::Z, Vec3::X),  // +Y
         [0.0, -1.0, 0.0] => (Vec3::X, Vec3::Z), // -Y
-        [0.0, 0.0, 1.0] => (Vec3::X, Vec3::Y),  // +Z
-        [0.0, 0.0, -1.0] => (Vec3::Y, Vec3::X), // -Z
+
         _ => (Vec3::X, Vec3::Y),
     }
 }
