@@ -55,12 +55,22 @@ fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     )
 }
 
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 pub fn cycle_system(
     time: Res<Time>,
     mut cycle: ResMut<DayNightCycle>,
     mut clear_color: ResMut<ClearColor>,
-    mut light_query: Query<&mut Transform, (With<DirectionalLight>, Without<Sun>)>,
-    mut sun_query: Query<&mut Transform, (With<Sun>, Without<DirectionalLight>)>,
+    // Bevy 0.17 and earlier: `AmbientLight` resource (renamed `GlobalAmbientLight` in 0.18).
+    mut ambient: ResMut<AmbientLight>,
+    mut light_query: Query<(&mut Transform, &mut DirectionalLight), Without<Sun>>,
+    mut sun_query: Query<
+        (&mut Transform, &mut Visibility),
+        (With<Sun>, Without<DirectionalLight>),
+    >,
 ) {
     cycle.time += time.delta_secs() * 0.005;
     if cycle.time > 1.0 {
@@ -68,21 +78,33 @@ pub fn cycle_system(
     }
 
     let angle = cycle.time * 2.0 * std::f32::consts::PI;
-    // -1 at midnight, 0 at sunrise/sunset, +1 at noon — matches the doc comments above.
+    // -1 at midnight, 0 at sunrise/sunset, +1 at noon.
     let height = -angle.cos();
     let horizontal = angle.sin();
     let sun_dir = Vec3::new(horizontal, height, 0.3).normalize(); // direction TOWARD the sun
     let light_dir = -sun_dir; // direction the light travels, toward the ground
 
-    for mut transform in light_query.iter_mut() {
-        // Rotate -Z (the light's forward axis) to point along light_dir,
-        // not Y — Y was rotating an axis the light doesn't actually use.
+    // 0 when the sun is at/below the horizon, ramping to 1 shortly after sunrise.
+    let sun_strength = smoothstep(-0.05, 0.3, height);
+
+    for (mut transform, mut light) in light_query.iter_mut() {
+        // Rotate -Z (the light's forward axis) to point along light_dir.
         transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, light_dir);
+        light.illuminance = 10_000.0 * sun_strength;
+        light.shadows_enabled = sun_strength > 0.01; // skip shadow pass at night
     }
 
-    for mut transform in sun_query.iter_mut() {
-        transform.translation = sun_dir * 400.0; // far enough to look like sky, not a nearby object
+    for (mut transform, mut visibility) in sun_query.iter_mut() {
+        transform.translation = sun_dir * 400.0; // far enough to look like sky
+        *visibility = if height > -0.05 {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden // don't show the sun disc through the ground
+        };
     }
+
+    // Dim the ambient fill so night faces aren't visible "for free".
+    ambient.brightness = 5.0 + 75.0 * sun_strength;
 
     let night = Color::srgb(0.01, 0.01, 0.05);
     let day = Color::srgb(0.4, 0.65, 0.95);
