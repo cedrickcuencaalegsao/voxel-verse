@@ -16,6 +16,10 @@ mod stone_block_texture;
 mod water_block_texture;
 mod wood_block_texture;
 
+mod moon_texture;
+mod star_texture;
+mod sun_texture;
+
 pub use bedrock_block_texture::gen_bedrock;
 pub use dirt_block_texture::gen_dirt;
 pub use grass_side_block_texture::gen_grass_side;
@@ -25,6 +29,10 @@ pub use sand_block_texture::gen_sand;
 pub use stone_block_texture::gen_stone;
 pub use water_block_texture::gen_water;
 pub use wood_block_texture::gen_wood;
+
+pub use moon_texture::{gen_moon, gen_moon_glow};
+pub use star_texture::{gen_star_dot, gen_star_sparkle};
+pub use sun_texture::gen_sun;
 
 pub const TILE_SIZE: u32 = 64;
 const CLUSTER: u32 = 4; // pixels per noise cluster edge
@@ -90,6 +98,26 @@ pub(crate) fn blank_tile() -> Vec<u8> {
 #[inline(always)]
 pub(crate) fn put(buf: &mut [u8], x: u32, y: u32, pixel: [u8; 4]) {
     let i = ((y * TILE_SIZE + x) * 4) as usize;
+    buf[i..i + 4].copy_from_slice(&pixel);
+}
+
+// ── Sky textures (sun, moon, stars) ───────────────────────────────────────────
+//
+// These are not part of the block atlas: `environment/daynight.rs` turns each
+// one into its own small image.
+
+/// Edge length (pixels) of the square sun / moon / moon-glow textures.
+pub const SKY_TEX_SIZE: u32 = 32;
+/// Edge length (pixels) of the star textures.
+pub const STAR_TEX_SIZE: u32 = 8;
+
+pub(crate) fn blank_rgba(size: u32) -> Vec<u8> {
+    vec![0u8; (size * size * 4) as usize]
+}
+
+#[inline(always)]
+pub(crate) fn put_rgba(buf: &mut [u8], size: u32, x: u32, y: u32, pixel: [u8; 4]) {
+    let i = ((y * size + x) * 4) as usize;
     buf[i..i + 4].copy_from_slice(&pixel);
 }
 

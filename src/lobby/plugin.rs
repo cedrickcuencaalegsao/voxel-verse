@@ -1,10 +1,10 @@
 use super::{
-    pages, scene, AppState, GameMode, GameSettings, Generation, LobbyAction, LobbyPage,
-    LobbyPanel, LobbyScene, NameCursor, NewAdventureForm, ProgressFill, Selected, StatusText,
+    AppState, GameMode, GameSettings, Generation, LobbyAction, LobbyPage, LobbyPanel, LobbyScene,
+    NameCursor, NewAdventureForm, ProgressFill, Selected, StatusText, pages, scene,
 };
 use crate::world::world_manager::WorldManager;
-use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::prelude::*;
 use std::fs;
 use std::path::PathBuf;
@@ -55,6 +55,7 @@ impl Plugin for LobbyPlugin {
                     blink_cursor.run_if(resource_exists_and_equals(LobbyPage::NewAdventure)),
                     animate_generation.run_if(resource_exists::<Generation>),
                     scene::animate_scene,
+                    scene::lobby_cycle_system, // ← add this
                 )
                     .chain()
                     .run_if(in_state(AppState::Lobby)),
@@ -80,7 +81,12 @@ fn exit_lobby(
 fn handle_buttons(
     mut commands: Commands,
     mut buttons: Query<
-        (&Interaction, &LobbyAction, &mut BackgroundColor, Has<Selected>),
+        (
+            &Interaction,
+            &LobbyAction,
+            &mut BackgroundColor,
+            Has<Selected>,
+        ),
         Changed<Interaction>,
     >,
     mut page: ResMut<LobbyPage>,
@@ -295,7 +301,11 @@ pub(super) fn list_worlds() -> Vec<(String, u32, bool)> {
             let multiplayer = fs::read_to_string(e.path().join("mode.txt"))
                 .map(|s| s.trim() == "multiplayer")
                 .unwrap_or(false);
-            (e.file_name().to_string_lossy().to_string(), seed, multiplayer)
+            (
+                e.file_name().to_string_lossy().to_string(),
+                seed,
+                multiplayer,
+            )
         })
         .collect();
     worlds.sort();

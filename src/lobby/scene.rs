@@ -1,11 +1,20 @@
 //! The 3D diorama behind the lobby menu: a 9x9x9 voxel island (ground, rocks,
 //! a tree) with a blocky character standing on top, waving.
+//!
+//! The scene runs its own small day/night cycle (see `lobby_cycle_system`).
+//! It is fully separate from `environment::daynight`, so the two never touch
+//! each other's lights.
 
 use super::LobbyScene;
 use bevy::prelude::*;
 
 const N: usize = 9; // island is N x N x N blocks
 const CHARACTER_Y: f32 = 5.0; // top surface of the grass layer
+
+/// How fast the lobby day passes. 0.02 → one full day every ~50 seconds.
+const LOBBY_DAY_SPEED: f32 = 0.02;
+/// Where in the day the lobby starts (0 = midnight, 0.25 = sunrise, 0.5 = noon).
+const LOBBY_START_TIME: f32 = 0.3;
 
 // ── voxel data ───────────────────────────────────────────────────────────────
 
@@ -133,6 +142,96 @@ pub(super) fn animate_scene(time: Res<Time>, mut parts: Query<(&mut Transform, &
     }
 }
 
+// ── day / night cycle ────────────────────────────────────────────────────────
+
+/// Current time of day for the lobby: 0..1 (0 = midnight, 0.5 = noon).
+/// Inserted fresh every time the lobby scene is spawned.
+#[derive(Resource)]
+pub(super) struct LobbyTime(pub(super) f32);
+
+/// Which role a lobby light plays in the cycle.
+#[derive(Component, Clone, Copy)]
+pub(super) enum LobbyLight {
+    Sun,  // key light, casts shadows, warm at sunrise/sunset
+    Moon, // dim bluish light that takes over at night
+    Fill, // soft light from the opposite side, fades with the sun
+}
+
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    let a = a.to_srgba();
+    let b = b.to_srgba();
+    let t = t.clamp(0.0, 1.0);
+    Color::srgba(
+        a.red + (b.red - a.red) * t,
+        a.green + (b.green - a.green) * t,
+        a.blue + (b.blue - a.blue) * t,
+        a.alpha + (b.alpha - a.alpha) * t,
+    )
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// Advances the lobby clock and updates lights + background colour.
+/// Register it next to `animate_scene` in the lobby plugin.
+pub(super) fn lobby_cycle_system(
+    time: Res<Time>,
+    lobby_time: Option<ResMut<LobbyTime>>,
+    mut lights: Query<(&mut Transform, &mut DirectionalLight, &LobbyLight)>,
+    mut cameras: Query<&mut Camera, With<LobbyScene>>,
+) {
+    let Some(mut lobby_time) = lobby_time else {
+        return;
+    };
+
+    lobby_time.0 = (lobby_time.0 + time.delta_secs() * LOBBY_DAY_SPEED).fract();
+
+    let angle = lobby_time.0 * std::f32::consts::TAU;
+    // -1 at midnight, 0 at sunrise/sunset, +1 at noon.
+    let height = -angle.cos();
+    let horizontal = angle.sin();
+    // Direction TOWARD the sun. +Z keeps it on the camera's side so the
+    // faces you can see are the lit ones; shadows fall back toward the wall.
+    let sun_dir = Vec3::new(horizontal * 0.8, height, 0.6).normalize();
+
+    let sun_strength = smoothstep(-0.05, 0.3, height); // 0 at night → 1 by mid-morning
+    let moon_strength = smoothstep(0.1, -0.3, height); // 0 by day → 1 at night
+
+    let sunset_orange = Color::srgb(1.0, 0.55, 0.30);
+    let day_white = Color::srgb(1.0, 0.96, 0.88);
+
+    for (mut transform, mut light, kind) in &mut lights {
+        match kind {
+            LobbyLight::Sun => {
+                // Light travels away from the sun, toward the island.
+                transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, -sun_dir);
+                light.illuminance = 9_000.0 * sun_strength;
+                light.shadows_enabled = sun_strength > 0.01;
+                light.color = lerp_color(sunset_orange, day_white, smoothstep(0.0, 0.5, height));
+            }
+            LobbyLight::Moon => {
+                // The moon sits opposite the sun, so its light travels along sun_dir.
+                transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, sun_dir);
+                light.illuminance = 1_500.0 * moon_strength;
+            }
+            LobbyLight::Fill => {
+                light.illuminance = 300.0 + 2_200.0 * sun_strength;
+            }
+        }
+    }
+
+    // Sky colour behind the island.
+    let night = Color::srgb(0.01, 0.02, 0.05);
+    let day = Color::srgb(0.09, 0.22, 0.13); // the original lobby background
+    let day_amount = (height * 0.5 + 0.5).clamp(0.0, 1.0);
+    let sky = lerp_color(night, day, day_amount);
+    for mut camera in &mut cameras {
+        camera.clear_color = ClearColorConfig::Custom(sky);
+    }
+}
+
 // ── spawning ─────────────────────────────────────────────────────────────────
 
 fn color(r: f32, g: f32, b: f32) -> StandardMaterial {
@@ -148,6 +247,9 @@ pub(super) fn spawn_lobby_scene(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    // Start every lobby visit in the morning.
+    commands.insert_resource(LobbyTime(LOBBY_START_TIME));
+
     // Camera looks slightly past the island's left so the island sits on the
     // right half of the screen, next to the menu.
     commands.spawn((
@@ -160,7 +262,8 @@ pub(super) fn spawn_lobby_scene(
         LobbyScene,
     ));
 
-    // Key light (with shadows) and a soft fill from the other side.
+    // Sun (key light, with shadows). Its rotation and strength are driven by
+    // `lobby_cycle_system` every frame; the initial transform is just a start.
     commands.spawn((
         DirectionalLight {
             illuminance: 9_000.0,
@@ -168,14 +271,31 @@ pub(super) fn spawn_lobby_scene(
             ..default()
         },
         Transform::from_xyz(-6.0, 12.0, 8.0).looking_at(Vec3::ZERO, Vec3::Y),
+        LobbyLight::Sun,
         LobbyScene,
     ));
+
+    // Moon: cool, dim light that fades in at night.
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 0.0,
+            color: Color::srgb(0.55, 0.65, 1.0),
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(6.0, 12.0, -8.0).looking_at(Vec3::ZERO, Vec3::Y),
+        LobbyLight::Moon,
+        LobbyScene,
+    ));
+
+    // Soft fill from the other side.
     commands.spawn((
         DirectionalLight {
             illuminance: 2_500.0,
             ..default()
         },
         Transform::from_xyz(8.0, 4.0, -6.0).looking_at(Vec3::new(0.0, 3.0, 0.0), Vec3::Y),
+        LobbyLight::Fill,
         LobbyScene,
     ));
 
