@@ -40,6 +40,7 @@ impl Plugin for LobbyPlugin {
         app.init_state::<AppState>()
             .init_resource::<GameSettings>()
             .init_resource::<NewAdventureForm>()
+            .init_resource::<pages::UiFonts>()
             .add_systems(
                 OnEnter(AppState::Lobby),
                 (enter_lobby, scene::spawn_lobby_scene),
