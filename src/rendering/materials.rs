@@ -1,1 +1,1 @@
-pub use super::atlas::{BlockAtlas, BlockFace, quad_uvs_for};
+pub use super::atlas::{BlockAtlas, BlockFace};

@@ -5,18 +5,25 @@ use bevy::{
     render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 
-use super::texture::{TILE_SIZE, generate_all_tiles};
+use super::texture::{TILE_SIZE, VARIANTS, generate_tile};
 use crate::world::block::BlockKind;
 
 pub const TILE_COUNT: u32 = 12; // was 9; +3 for CoalOre, IronOre, DiamondOre
+
+/// Atlas slots in total: every tile has `VARIANTS` different versions.
+///
+/// Layout: slots `0..TILE_COUNT` hold variant 0 (the originals, so all the old
+/// tile indices still work), slots `TILE_COUNT..2*TILE_COUNT` hold variant 1,
+/// and so on.
+pub const ATLAS_SLOTS: u32 = TILE_COUNT * VARIANTS as u32;
 /// How many tiles fit across one atlas row.
 pub const ATLAS_COLS: u32 = 4;
 /// Number of rows required — computed at compile time (ceiling division).
-pub const ATLAS_ROWS: u32 = (TILE_COUNT + ATLAS_COLS - 1) / ATLAS_COLS; // = 3
+pub const ATLAS_ROWS: u32 = (ATLAS_SLOTS + ATLAS_COLS - 1) / ATLAS_COLS;
 /// Atlas width in pixels.
-pub const ATLAS_W: u32 = ATLAS_COLS * TILE_SIZE; // = 256
+pub const ATLAS_W: u32 = ATLAS_COLS * TILE_SIZE;
 /// Atlas height in pixels.
-pub const ATLAS_H: u32 = ATLAS_ROWS * TILE_SIZE; // = 192
+pub const ATLAS_H: u32 = ATLAS_ROWS * TILE_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u32)]
@@ -103,25 +110,57 @@ pub fn quad_uvs_for_tile(tile_idx: u32) -> [[f32; 2]; 4] {
     ]
 }
 
+/// Plain (variant 0) UVs. Existing mesher code that calls this keeps working.
+#[allow(dead_code)]
 pub fn quad_uvs_for(kind: BlockKind, face: BlockFace) -> [[f32; 2]; 4] {
     quad_uvs_for_tile(tile_index_for(kind, face))
 }
 
+// ── Anti-repetition ───────────────────────────────────────────────────────────
+
+/// Atlas slot of `tile_idx` in the given variant (0..VARIANTS).
+pub fn variant_slot(tile_idx: u32, variant: usize) -> u32 {
+    variant as u32 * TILE_COUNT + tile_idx
+}
+
+/// Picks a variant for one block face from its `block_hash`.
+/// The variants are separately generated patterns (not flipped copies), so
+/// every face, side or top, can safely use any of them.
+pub fn pick_variant(hash: u64) -> usize {
+    ((hash >> 4) % VARIANTS as u64) as usize
+}
+
+/// UVs for one block face with its own random-but-stable variant.
+/// `hash` comes from `texture::block_hash(wx, wy, wz, face_id)`.
+pub fn quad_uvs_for_hashed(kind: BlockKind, face: BlockFace, hash: u64) -> [[f32; 2]; 4] {
+    let tile = tile_index_for(kind, face);
+    quad_uvs_for_tile(variant_slot(tile, pick_variant(hash)))
+}
+
+/// Small per-face brightness change (about 0.92 to 1.04) for the vertex color,
+/// so neighbouring blocks never look exactly the same.
+pub fn face_tint(hash: u64) -> f32 {
+    0.92 + ((hash >> 16) & 0xFF) as f32 / 255.0 * 0.12
+}
+
+// ── Atlas image ───────────────────────────────────────────────────────────────
+
 pub fn build_atlas_image() -> Image {
-    let tiles = generate_all_tiles();
     let mut rgba = vec![0u8; (ATLAS_W * ATLAS_H * 4) as usize];
 
-    for (idx, tile) in tiles.iter().enumerate() {
-        let col = (idx as u32) % ATLAS_COLS;
-        let row = (idx as u32) / ATLAS_COLS;
-        let ox = col * TILE_SIZE;
-        let oy = row * TILE_SIZE;
+    for variant in 0..VARIANTS {
+        for tile_idx in 0..TILE_COUNT {
+            let tile = generate_tile(tile_idx as usize, variant as u64);
+            let slot = variant_slot(tile_idx, variant);
+            let ox = (slot % ATLAS_COLS) * TILE_SIZE;
+            let oy = (slot / ATLAS_COLS) * TILE_SIZE;
 
-        for ty in 0..TILE_SIZE {
-            for tx in 0..TILE_SIZE {
-                let src = ((ty * TILE_SIZE + tx) * 4) as usize;
-                let dst = (((oy + ty) * ATLAS_W + (ox + tx)) * 4) as usize;
-                rgba[dst..dst + 4].copy_from_slice(&tile[src..src + 4]);
+            for ty in 0..TILE_SIZE {
+                for tx in 0..TILE_SIZE {
+                    let src = ((ty * TILE_SIZE + tx) * 4) as usize;
+                    let dst = (((oy + ty) * ATLAS_W + (ox + tx)) * 4) as usize;
+                    rgba[dst..dst + 4].copy_from_slice(&tile[src..src + 4]);
+                }
             }
         }
     }

@@ -1,5 +1,7 @@
+use crate::rendering::atlas::{face_tint, quad_uvs_for_hashed};
 use crate::rendering::greedy_meshing::generate_chunk_quads;
-use crate::rendering::materials::{BlockAtlas, BlockFace, quad_uvs_for};
+use crate::rendering::materials::{BlockAtlas, BlockFace};
+use crate::rendering::texture::block_hash;
 use crate::world::chunk::Chunk;
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -45,18 +47,25 @@ pub fn remesh_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     atlas: Res<BlockAtlas>,
-    query: Query<(Entity, &Chunk), Changed<Chunk>>,
+    query: Query<(Entity, &Chunk, Option<&Transform>), Changed<Chunk>>,
 ) {
-    for (entity, chunk) in query.iter() {
+    for (entity, chunk, transform) in query.iter() {
         if !chunk.needs_remesh {
             continue;
         }
+
+        // The mesh is drawn with the chunk entity's transform, so a block's
+        // WORLD position is that translation plus the quad's local position.
+        // Hashing the world position (not the chunk-local one) is what stops
+        // every chunk from repeating the same pattern.
+        let chunk_origin = transform.map(|t| t.translation).unwrap_or(Vec3::ZERO);
 
         let quads = generate_chunk_quads(chunk);
 
         let mut positions = Vec::new();
         let mut normals = Vec::new();
         let mut uvs = Vec::new();
+        let mut colors: Vec<[f32; 4]> = Vec::new();
         let mut indices = Vec::new();
         let mut vertex_index = 0u32;
 
@@ -85,12 +94,21 @@ pub fn remesh_chunks(
             ]);
             normals.extend_from_slice(&[quad.normal; 4]);
 
-            // Atlas tile UVs replace the old per-block vertex color.
-            // NOTE: for merged quads wider/taller than 1 block, this stretches
-            // a single tile across the whole face rather than tiling it — see
-            // "UV stretching note" in the greedy meshing migration guide.
+            // Per-block variation: a stable hash of the block's world position
+            // and face picks which version of the tile to use, plus a small
+            // brightness tint, so the pattern never visibly repeats.
             let face = block_face_from_normal(quad.normal);
-            uvs.extend_from_slice(&quad_uvs_for(quad.block_kind, face));
+            let world_min = chunk_origin + Vec3::from_array(quad.position);
+            let hash = block_hash(
+                world_min.x.floor() as i32,
+                world_min.y.floor() as i32,
+                world_min.z.floor() as i32,
+                face as u32,
+            );
+            uvs.extend_from_slice(&quad_uvs_for_hashed(quad.block_kind, face, hash));
+
+            let tint = face_tint(hash);
+            colors.extend_from_slice(&[[tint, tint, tint, 1.0]; 4]);
 
             indices.extend_from_slice(&[
                 vertex_index,
@@ -110,6 +128,7 @@ pub fn remesh_chunks(
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
         mesh.insert_indices(Indices::U32(indices));
 
         // NOTE: all quads in a chunk currently share one opaque, textured
@@ -120,9 +139,7 @@ pub fn remesh_chunks(
         // To get real water transparency, split `quads` into two groups
         // (water vs. everything else) before the loop above, build two
         // meshes, and spawn two entities — one with `atlas.opaque`, one
-        // with `atlas.translucent`. Flagging this as a follow-up rather
-        // than guessing at your water-detection logic (e.g. BlockKind::Water)
-        // since I don't have chunk.rs / block.rs in front of me.
+        // with `atlas.translucent`.
         commands.entity(entity).insert((
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(atlas.opaque.clone()),

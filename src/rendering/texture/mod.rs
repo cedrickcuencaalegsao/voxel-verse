@@ -3,6 +3,10 @@
 //! Every generator returns a `Vec<u8>` of raw RGBA data for a
 //! `TILE_SIZE × TILE_SIZE` tile. No external files or RNG crates are used.
 //!
+//! Every block generator takes a `variant` number. Variant 0 is the original
+//! look; other numbers give a different but stable pattern, so blocks in the
+//! world can pick different versions and the texture never visibly repeats.
+//!
 //! To edit a block's default look, open its `<block>_block_texture.rs` file.
 //! Shared noise / colour helpers live here.
 
@@ -41,7 +45,7 @@ const CLUSTER: u32 = 4; // pixels per noise cluster edge
 
 /// Splitmix64 finalizer — bijective, avalanche-quality, branch-free.
 #[inline(always)]
-fn hash64(mut x: u64) -> u64 {
+pub(crate) fn hash64(mut x: u64) -> u64 {
     x ^= x >> 30;
     x = x.wrapping_mul(0xbf58476d1ce4e5b9);
     x ^= x >> 27;
@@ -66,6 +70,13 @@ pub(crate) fn pixel_noise(px: u32, py: u32, seed: u64) -> u8 {
 
     let h = hash64(seed ^ x ^ y);
     (h >> 56) as u8
+}
+
+/// XOR-ed into every seed of a generator. Variant 0 returns 0, so the original
+/// look is unchanged; other variants give a different, stable salt.
+#[inline(always)]
+pub(crate) fn variant_salt(variant: u64) -> u64 {
+    if variant == 0 { 0 } else { hash64(variant) }
 }
 
 // ── Colour helpers ────────────────────────────────────────────────────────────
@@ -101,6 +112,23 @@ pub(crate) fn put(buf: &mut [u8], x: u32, y: u32, pixel: [u8; 4]) {
     buf[i..i + 4].copy_from_slice(&pixel);
 }
 
+// ── Anti-repetition: per-block variation ──────────────────────────────────────
+
+/// How many different versions exist of every tile. Raise it for more variety
+/// (the atlas grows by one block of tiles per extra variant).
+pub const VARIANTS: usize = 4;
+
+/// Stable pseudo-random value for one face of one block.
+/// The same inputs always give the same result, so a block never changes
+/// its look between frames or after a chunk is rebuilt.
+pub fn block_hash(x: i32, y: i32, z: i32, face: u32) -> u64 {
+    let mut h = (x as i64 as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    h ^= (y as i64 as u64).wrapping_mul(0x6c62_272e_07bb_0142);
+    h ^= (z as i64 as u64).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h ^= (face as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
+    hash64(h)
+}
+
 // ── Sky textures (sun, moon, stars) ───────────────────────────────────────────
 //
 // These are not part of the block atlas: `environment/daynight.rs` turns each
@@ -123,7 +151,7 @@ pub(crate) fn put_rgba(buf: &mut [u8], size: u32, x: u32, y: u32, pixel: [u8; 4]
 
 // ── Atlas entry point ─────────────────────────────────────────────────────────
 
-/// Returns all tile RGBA buffers in canonical `TileIndex` discriminant order.
+/// Generates one tile in the given variant (0 = original look).
 ///
 /// ```text
 /// Index  Tile
@@ -139,17 +167,20 @@ pub(crate) fn put_rgba(buf: &mut [u8], size: u32, x: u32, y: u32, pixel: [u8; 4]
 ///   8    Bedrock
 /// ```
 ///
+/// Any other index (the ore slots) returns a blank transparent tile.
+///
 /// **This ordering must stay in sync with `TileIndex` in `atlas.rs`.**
-pub fn generate_all_tiles() -> [Vec<u8>; 9] {
-    [
-        gen_stone(),      // 0 — TileIndex::Stone
-        gen_dirt(),       // 1 — TileIndex::Dirt
-        gen_grass_top(),  // 2 — TileIndex::GrassTop
-        gen_grass_side(), // 3 — TileIndex::GrassSide
-        gen_sand(),       // 4 — TileIndex::Sand
-        gen_water(),      // 5 — TileIndex::Water
-        gen_wood(),       // 6 — TileIndex::Wood
-        gen_leaves(),     // 7 — TileIndex::Leaves
-        gen_bedrock(),    // 8 — TileIndex::Bedrock
-    ]
+pub fn generate_tile(tile: usize, variant: u64) -> Vec<u8> {
+    match tile {
+        0 => gen_stone(variant),      // TileIndex::Stone
+        1 => gen_dirt(variant),       // TileIndex::Dirt
+        2 => gen_grass_top(variant),  // TileIndex::GrassTop
+        3 => gen_grass_side(variant), // TileIndex::GrassSide
+        4 => gen_sand(variant),       // TileIndex::Sand
+        5 => gen_water(variant),      // TileIndex::Water
+        6 => gen_wood(variant),       // TileIndex::Wood
+        7 => gen_leaves(variant),     // TileIndex::Leaves
+        8 => gen_bedrock(variant),    // TileIndex::Bedrock
+        _ => blank_tile(),
+    }
 }
