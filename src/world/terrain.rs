@@ -13,8 +13,13 @@ const SPAWN_BLEND_RADIUS: i32 = 40;
 /// Fixed Y surface height of the spawn platform (a peaceful grassy plain).
 const SPAWN_FLAT_Y: f64 = 66.0; // SEA_LEVEL(62) + 4 — a calm grassy plain
 
-/// Y level treated as "sea" – sand/gravel appear near this height.
+/// Y level of the sea. Empty space at or below this height is filled with
+/// water, and sand appears around it.
 const SEA_LEVEL: i32 = 62;
+
+/// How far above `SEA_LEVEL` the average plains sit. Lower = more lakes/ponds,
+/// higher = drier land. (It was 4.0 before; 1.0 gives plenty of small lakes.)
+const PLAINS_BASE_OFFSET: f64 = 1.0;
 
 /// Absolute bedrock floor.
 const BEDROCK_Y: i32 = 0;
@@ -102,7 +107,7 @@ impl TerrainGenerator {
 
         let plains_h = {
             let n = self.fbm(world_x, world_z, 4, 0.003);
-            SEA_LEVEL as f64 + 4.0 + n * 8.0
+            SEA_LEVEL as f64 + PLAINS_BASE_OFFSET + n * 8.0
         };
 
         let hills_h = {
@@ -180,6 +185,18 @@ impl TerrainGenerator {
         }
     }
 
+    /// Air above the ground, except that empty space at or below `SEA_LEVEL`
+    /// is water (this is what fills lakes and the sea).
+    #[inline]
+    fn air_or_water(world_y: i32) -> Block {
+        let kind = if world_y <= SEA_LEVEL {
+            BlockKind::Water
+        } else {
+            BlockKind::Air
+        };
+        Block { kind }
+    }
+
     pub fn block_at(&self, world_x: i32, world_y: i32, world_z: i32) -> Block {
         if world_y <= BEDROCK_Y {
             return Block {
@@ -194,9 +211,7 @@ impl TerrainGenerator {
         let surface_height = self.surface_y(world_x, world_z);
 
         if world_y > surface_height {
-            return Block {
-                kind: BlockKind::Air,
-            };
+            return Self::air_or_water(world_y);
         }
 
         if world_y < surface_height && self.is_cave(world_x, world_y, world_z) {
@@ -247,9 +262,7 @@ impl TerrainGenerator {
         let surface_height = self.spawn_height_at(world_x as f64, world_z as f64) as i32;
 
         if world_y > surface_height {
-            Block {
-                kind: BlockKind::Air,
-            }
+            Self::air_or_water(world_y)
         } else if world_y == surface_height {
             Block {
                 kind: BlockKind::Grass,

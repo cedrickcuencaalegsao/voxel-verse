@@ -2,10 +2,46 @@ use crate::rendering::atlas::{face_tint, quad_uvs_for_hashed};
 use crate::rendering::greedy_meshing::generate_chunk_quads;
 use crate::rendering::materials::{BlockAtlas, BlockFace};
 use crate::rendering::texture::block_hash;
+use crate::world::block::BlockKind;
 use crate::world::chunk::Chunk;
 use bevy::asset::RenderAssetUsages;
+use bevy::light::NotShadowCaster;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
+
+/// Points from a chunk entity to its child entity that holds the water mesh,
+/// so the old water mesh can be replaced when the chunk is rebuilt.
+#[derive(Component)]
+pub struct ChunkWaterMesh(Entity);
+
+/// Vertex data for one mesh (the solid blocks or the water).
+#[derive(Default)]
+struct MeshData {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    uvs: Vec<[f32; 2]>,
+    colors: Vec<[f32; 4]>,
+    indices: Vec<u32>,
+}
+
+impl MeshData {
+    fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+    }
+
+    fn into_mesh(self) -> Mesh {
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.uvs);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colors);
+        mesh.insert_indices(Indices::U32(self.indices));
+        mesh
+    }
+}
 
 /// Tangent axes (u, v) for a face such that u.cross(v) == that face's
 /// outward normal. This must be picked per direction, not shared between
@@ -47,9 +83,12 @@ pub fn remesh_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     atlas: Res<BlockAtlas>,
-    query: Query<(Entity, &Chunk, Option<&Transform>), Changed<Chunk>>,
+    query: Query<
+        (Entity, &Chunk, Option<&Transform>, Option<&ChunkWaterMesh>),
+        Changed<Chunk>,
+    >,
 ) {
-    for (entity, chunk, transform) in query.iter() {
+    for (entity, chunk, transform, old_water) in query.iter() {
         if !chunk.needs_remesh {
             continue;
         }
@@ -62,14 +101,18 @@ pub fn remesh_chunks(
 
         let quads = generate_chunk_quads(chunk);
 
-        let mut positions = Vec::new();
-        let mut normals = Vec::new();
-        let mut uvs = Vec::new();
-        let mut colors: Vec<[f32; 4]> = Vec::new();
-        let mut indices = Vec::new();
-        let mut vertex_index = 0u32;
+        // Solid blocks and water go in separate meshes, because water needs
+        // the translucent material and everything else the opaque one.
+        let mut solid = MeshData::default();
+        let mut water = MeshData::default();
 
         for quad in &quads {
+            let target = if matches!(quad.block_kind, BlockKind::Water) {
+                &mut water
+            } else {
+                &mut solid
+            };
+
             // quad.position is the block's MIN corner — block (3,5,2) occupies
             // [3,4]x[5,6]x[2,3] — so we move to the block's center first, then
             // push out half a unit along the normal to reach the face plane.
@@ -86,13 +129,14 @@ pub fn remesh_chunks(
             let v2 = v0 + u_dir * w + v_dir * h;
             let v3 = v0 + v_dir * h;
 
-            positions.extend_from_slice(&[
+            let base = target.positions.len() as u32;
+            target.positions.extend_from_slice(&[
                 v0.to_array(),
                 v1.to_array(),
                 v2.to_array(),
                 v3.to_array(),
             ]);
-            normals.extend_from_slice(&[quad.normal; 4]);
+            target.normals.extend_from_slice(&[quad.normal; 4]);
 
             // Per-block variation: a stable hash of the block's world position
             // and face picks which version of the tile to use, plus a small
@@ -105,44 +149,48 @@ pub fn remesh_chunks(
                 world_min.z.floor() as i32,
                 face as u32,
             );
-            uvs.extend_from_slice(&quad_uvs_for_hashed(quad.block_kind, face, hash));
+            target
+                .uvs
+                .extend_from_slice(&quad_uvs_for_hashed(quad.block_kind, face, hash));
 
             let tint = face_tint(hash);
-            colors.extend_from_slice(&[[tint, tint, tint, 1.0]; 4]);
+            target.colors.extend_from_slice(&[[tint, tint, tint, 1.0]; 4]);
 
-            indices.extend_from_slice(&[
-                vertex_index,
-                vertex_index + 1,
-                vertex_index + 2,
-                vertex_index + 2,
-                vertex_index + 3,
-                vertex_index,
-            ]);
-            vertex_index += 4;
+            target
+                .indices
+                .extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
         }
 
-        let mut mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::RENDER_WORLD,
-        );
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-        mesh.insert_indices(Indices::U32(indices));
-
-        // NOTE: all quads in a chunk currently share one opaque, textured
-        // material. Water blocks will render using the atlas texture's
-        // baked-in alpha=200 pixels, but AlphaMode::Opaque ignores alpha,
-        // so water will currently look fully solid instead of translucent.
-        //
-        // To get real water transparency, split `quads` into two groups
-        // (water vs. everything else) before the loop above, build two
-        // meshes, and spawn two entities — one with `atlas.opaque`, one
-        // with `atlas.translucent`.
+        // Solid blocks: the chunk entity itself, opaque material.
         commands.entity(entity).insert((
-            Mesh3d(meshes.add(mesh)),
+            Mesh3d(meshes.add(solid.into_mesh())),
             MeshMaterial3d(atlas.opaque.clone()),
         ));
+
+        // Water: a child entity with the translucent material. Remove the old
+        // one first so a rebuilt chunk never keeps stale water.
+        if let Some(old) = old_water {
+            commands.entity(old.0).despawn();
+        }
+        if water.is_empty() {
+            commands.entity(entity).remove::<ChunkWaterMesh>();
+        } else {
+            let mut water_entity = None;
+            commands.entity(entity).with_children(|parent| {
+                water_entity = Some(
+                    parent
+                        .spawn((
+                            Mesh3d(meshes.add(water.into_mesh())),
+                            MeshMaterial3d(atlas.translucent.clone()),
+                            Transform::default(),
+                            NotShadowCaster, // water shouldn't darken the lake bed
+                        ))
+                        .id(),
+                );
+            });
+            if let Some(id) = water_entity {
+                commands.entity(entity).insert(ChunkWaterMesh(id));
+            }
+        }
     }
 }
