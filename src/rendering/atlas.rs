@@ -97,7 +97,10 @@ pub fn uv_rect(tile_idx: u32) -> [f32; 4] {
     let row = tile_idx / ATLAS_COLS;
     let u0 = col as f32 * tw;
     let v0 = row as f32 * th;
-    [u0, v0, u0 + tw, v0 + th]
+    // Inset by half a texel so sampling never touches the neighbouring tile.
+    let eu = 0.5 / ATLAS_W as f32;
+    let ev = 0.5 / ATLAS_H as f32;
+    [u0 + eu, v0 + ev, u0 + tw - eu, v0 + th - ev]
 }
 
 pub fn quad_uvs_for_tile(tile_idx: u32) -> [[f32; 2]; 4] {
@@ -139,8 +142,9 @@ pub fn quad_uvs_for_hashed(kind: BlockKind, face: BlockFace, hash: u64) -> [[f32
 
 /// Small per-face brightness change (about 0.92 to 1.04) for the vertex color,
 /// so neighbouring blocks never look exactly the same.
-pub fn face_tint(hash: u64) -> f32 {
-    0.92 + ((hash >> 16) & 0xFF) as f32 / 255.0 * 0.12
+pub fn face_tint(_hash: u64) -> f32 {
+    // 0.92 + ((_hash >> 16) & 0xFF) as f32 / 255.0 * 0.12 // visible like of each voxel
+    1.0
 }
 
 // ── Atlas image ───────────────────────────────────────────────────────────────
