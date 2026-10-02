@@ -8,6 +8,7 @@ bevy = { version = "0.17", features = [
     "bevy_core_pipeline",
     "bevy_render",
     "bevy_pbr",
+    "bevy_light",
     "bevy_winit",
     "bevy_window",
     "png",

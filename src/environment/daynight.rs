@@ -1,5 +1,6 @@
 use bevy::asset::RenderAssetUsages;
 use bevy::image::ImageSampler;
+use bevy::light::{CascadeShadowConfigBuilder, NotShadowCaster};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use std::f32::consts::{PI, TAU};
@@ -16,7 +17,7 @@ const DAY_SPEED: f32 = 0.005;
 
 /// How bright the night is. Lower = darker nights.
 /// Moonlight strength at full night (the sun is 10_000 at noon).
-const MOON_ILLUMINANCE: f32 = 7.0;
+const MOON_ILLUMINANCE: f32 = 100.0;
 /// Ambient fill at night and by day (it blends between the two).
 const AMBIENT_NIGHT: f32 = 3.0;
 const AMBIENT_DAY: f32 = 80.0;
@@ -26,6 +27,20 @@ const NIGHT_SKY: Color = Color::srgb(0.003, 0.004, 0.015);
 /// Shadows from each light. `true` = always on (costs one shadow pass per light).
 const SUN_SHADOWS: bool = true;
 const MOON_SHADOWS: bool = true;
+
+/// Lowest height the sun/moon *light* can reach (0 = horizon, 1 = straight up).
+/// Stops dawn/dusk from casting huge, very long shadows. The visible sun and
+/// moon squares still travel all the way to the horizon. Set to 0.0 to disable.
+const LIGHT_MIN_HEIGHT: f32 = 0.35;
+
+/// Shadow cascade settings. Shadows stop at `SHADOW_MAX_DISTANCE`; that cutoff is
+/// the curved line you can see on the ground, so keep it far away.
+/// Raise it if the line is still visible, lower it if shadows look blurry/blocky.
+const SHADOW_CASCADES: usize = 4;
+const SHADOW_MIN_DISTANCE: f32 = 0.5;
+const SHADOW_MAX_DISTANCE: f32 = 150.0;
+const SHADOW_FIRST_CASCADE_FAR: f32 = 15.0;
+const SHADOW_OVERLAP: f32 = 0.3;
 
 /// Distance of the sun / moon from the camera.
 const SKY_RADIUS: f32 = 400.0;
@@ -189,12 +204,27 @@ fn set_alpha(materials: &mut Assets<StandardMaterial>, handle: &Handle<StandardM
 
 /// Run once at startup: the two lights, the square sun, the moon (with glow)
 /// and the star field.
+///
+/// Every sky object has `NotShadowCaster`. A directional light has no position,
+/// so the sun/moon quads sit on the line between the light and the ground and
+/// would otherwise block the light and cast a big shadow onto the player.
 pub fn setup_sky(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
 ) {
+    // Shadow cascades shared by both lights. Pushing the max distance out moves
+    // the shadow cutoff (the curved line on the ground) out of sight.
+    let cascades = CascadeShadowConfigBuilder {
+        num_cascades: SHADOW_CASCADES,
+        minimum_distance: SHADOW_MIN_DISTANCE,
+        maximum_distance: SHADOW_MAX_DISTANCE,
+        first_cascade_far_bound: SHADOW_FIRST_CASCADE_FAR,
+        overlap_proportion: SHADOW_OVERLAP,
+    }
+    .build();
+
     // Lights. Rotation and strength are driven by `cycle_system`.
     commands.spawn((
         DirectionalLight {
@@ -202,6 +232,7 @@ pub fn setup_sky(
             shadows_enabled: SUN_SHADOWS,
             ..default()
         },
+        cascades.clone(),
         Transform::default(),
         SkyLight::Sun,
     ));
@@ -212,6 +243,7 @@ pub fn setup_sky(
             shadows_enabled: MOON_SHADOWS,
             ..default()
         },
+        cascades,
         Transform::default(),
         SkyLight::Moon,
     ));
@@ -226,6 +258,7 @@ pub fn setup_sky(
     // Sun — a square.
     commands.spawn((
         SkyBody::Sun,
+        NotShadowCaster,
         Mesh3d(meshes.add(Rectangle::new(SUN_SIZE, SUN_SIZE))),
         MeshMaterial3d(materials.add(sky_material(sun_tex, AlphaMode::Opaque))),
         Transform::default(),
@@ -234,6 +267,7 @@ pub fn setup_sky(
     // Moon + glow behind it.
     commands.spawn((
         SkyBody::Moon,
+        NotShadowCaster,
         Mesh3d(meshes.add(Rectangle::new(MOON_SIZE, MOON_SIZE))),
         MeshMaterial3d(materials.add(sky_material(moon_tex, AlphaMode::Opaque))),
         Transform::default(),
@@ -244,6 +278,7 @@ pub fn setup_sky(
     });
     commands.spawn((
         SkyBody::MoonGlow,
+        NotShadowCaster,
         Mesh3d(meshes.add(Rectangle::new(MOON_GLOW_SIZE, MOON_GLOW_SIZE))),
         MeshMaterial3d(moon_glow.clone()),
         Transform::default(),
@@ -285,6 +320,7 @@ pub fn setup_sky(
                 let size = (1.5 + star_rand(i, 2).powi(2) * 5.0) * boost;
 
                 field.spawn((
+                    NotShadowCaster,
                     Mesh3d(star_mesh.clone()),
                     MeshMaterial3d(material.clone()),
                     // Face the centre of the dome (where the camera is).
@@ -321,15 +357,29 @@ pub fn cycle_system(
     for (mut transform, mut light, kind) in &mut lights {
         match kind {
             SkyLight::Sun => {
+                // The light uses a clamped height so shadows never get too long
+                // at dawn/dusk. The visible sun is still drawn at its real position.
+                let sun_pos = Vec3::new(
+                    sky.angle.sin(),
+                    sky.height.max(LIGHT_MIN_HEIGHT),
+                    0.3,
+                )
+                .normalize();
                 // Light travels away from the sun, toward the ground.
-                transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, -sky.sun_dir);
+                transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, -sun_pos);
                 light.illuminance = 10_000.0 * sky.sun_strength;
                 light.shadows_enabled = SUN_SHADOWS;
                 light.color = lerp_color(sunset_orange, day_white, smoothstep(0.0, 0.5, sky.height));
             }
             SkyLight::Moon => {
-                // The moon is opposite the sun, so its light travels along sun_dir.
-                transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, sky.sun_dir);
+                // The moon is opposite the sun.
+                let moon_pos = Vec3::new(
+                    -sky.angle.sin(),
+                    (-sky.height).max(LIGHT_MIN_HEIGHT),
+                    -0.3,
+                )
+                .normalize();
+                transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, -moon_pos);
                 light.illuminance = MOON_ILLUMINANCE * sky.moon_strength;
                 light.shadows_enabled = MOON_SHADOWS;
             }
