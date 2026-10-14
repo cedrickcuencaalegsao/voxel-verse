@@ -1,6 +1,8 @@
 use crate::models::grass_model::{GrassInstance, GrassModel};
 use crate::models::leaves_model::{LeavesInstance, LeavesModel};
+use crate::models::sand_model::{SandInstance, SandModel};
 use crate::models::soil_model::{SoilInstance, SoilModel};
+use crate::models::water_model::{WaterInstance, WaterModel};
 use crate::models::wood_model::{WoodInstance, WoodModel};
 use crate::rendering::atlas::{face_tint, quad_uvs_for_hashed};
 use crate::rendering::greedy_meshing::generate_chunk_quads;
@@ -120,6 +122,40 @@ fn is_exposed(chunk: &Chunk, x: usize, y: usize, z: usize) -> bool {
     false
 }
 
+/// Water is only visible where it touches air (the surface), exactly like
+/// `Block::should_draw_face_against`. Water next to water or the ground is
+/// hidden, so a lake gets one layer of instances instead of one per block.
+/// Chunk borders are NOT treated as exposed here: the surface block is caught
+/// by the "air above" test, and counting borders would spawn whole walls of
+/// water along every chunk edge.
+fn is_water_exposed(chunk: &Chunk, x: usize, y: usize, z: usize) -> bool {
+    const DIRS: [(i32, i32, i32); 6] = [
+        (1, 0, 0),
+        (-1, 0, 0),
+        (0, 1, 0),
+        (0, -1, 0),
+        (0, 0, 1),
+        (0, 0, -1),
+    ];
+    let (cs, ch) = (CHUNK_SIZE as i32, CHUNK_HEIGHT as i32);
+
+    for (dx, dy, dz) in DIRS {
+        let nx = x as i32 + dx;
+        let ny = y as i32 + dy;
+        let nz = z as i32 + dz;
+        if ny >= ch {
+            return true; // open sky above the top of the chunk
+        }
+        if nx < 0 || ny < 0 || nz < 0 || nx >= cs || nz >= cs {
+            continue;
+        }
+        if chunk.get_block(nx as usize, ny as usize, nz as usize).kind == BlockKind::Air {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn remesh_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -128,6 +164,8 @@ pub fn remesh_chunks(
     leaves_model: Res<LeavesModel>,
     wood_model: Res<WoodModel>,
     soil_model: Res<SoilModel>,
+    sand_model: Res<SandModel>,
+    water_model: Res<WaterModel>,
     query: Query<
         (
             Entity,
@@ -147,6 +185,8 @@ pub fn remesh_chunks(
             BlockKind::Leaves => leaves_model.0.as_ref(),
             BlockKind::Wood => wood_model.0.as_ref(),
             BlockKind::Dirt => soil_model.0.as_ref(),
+            BlockKind::Sand => sand_model.0.as_ref(),
+            BlockKind::Water => water_model.0.as_ref(),
             _ => None,
         }
     };
@@ -282,7 +322,13 @@ pub fn remesh_chunks(
                         };
 
                         // Skip buried blocks (e.g. leaves inside the canopy).
-                        if !is_exposed(chunk, x, y, z) {
+                        // Water has its own rule: only the surface is drawn.
+                        let visible = if kind == BlockKind::Water {
+                            is_water_exposed(chunk, x, y, z)
+                        } else {
+                            is_exposed(chunk, x, y, z)
+                        };
+                        if !visible {
                             continue;
                         }
 
@@ -294,15 +340,25 @@ pub fn remesh_chunks(
                         let wz = chunk_origin.z as i32 + z as i32;
                         let quarter_turns =
                             (block_hash(wx, wy, wz, 7 + kind as u32) as u64 % 4) as f32;
+                        // Sand and water also get a random turn around the X axis
+                        // (independent hash salt), on top of the Y turn. That gives
+                        // 16 orientations instead of 4, so the same orientation
+                        // rarely shows up twice in a row.
+                        let x_turns = if matches!(kind, BlockKind::Sand | BlockKind::Water) {
+                            (block_hash(wx, wy, wz, 31 + kind as u32) as u64 % 4) as f32
+                        } else {
+                            0.0
+                        };
+                        let rotation =
+                            Quat::from_rotation_y(quarter_turns * std::f32::consts::FRAC_PI_2)
+                                * Quat::from_rotation_x(x_turns * std::f32::consts::FRAC_PI_2);
 
                         let mut instance = parent.spawn((
                             SceneRoot(scene.clone()),
                             // Block (x,y,z) occupies [x,x+1]..., so +0.5 is its
                             // centre. Adjust if the GLB origin differs.
                             Transform::from_xyz(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5)
-                                .with_rotation(Quat::from_rotation_y(
-                                    quarter_turns * std::f32::consts::FRAC_PI_2,
-                                )),
+                                .with_rotation(rotation),
                         ));
                         match kind {
                             BlockKind::Grass => {
@@ -316,6 +372,12 @@ pub fn remesh_chunks(
                             }
                             BlockKind::Dirt => {
                                 instance.insert(SoilInstance);
+                            }
+                            BlockKind::Sand => {
+                                instance.insert(SandInstance);
+                            }
+                            BlockKind::Water => {
+                                instance.insert(WaterInstance);
                             }
                             _ => {}
                         }
