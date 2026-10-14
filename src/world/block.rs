@@ -72,4 +72,34 @@ impl Block {
     pub const fn is_transparent(&self) -> bool {
         !self.is_solid() || matches!(self.kind, BlockKind::Water | BlockKind::Leaves)
     }
+
+    pub const fn is_water(&self) -> bool {
+        matches!(self.kind, BlockKind::Water)
+    }
+
+    /// Is this a grass block? Used by the mesher to skip grass faces when
+    /// `assets/textures/grass.glb` exists and the model is rendered instead.
+    ///
+    /// Grass stays solid (see `is_solid`) so neighbouring blocks don't emit
+    /// faces against it and the terrain stays watertight.
+    pub const fn is_grass(&self) -> bool {
+        matches!(self.kind, BlockKind::Grass)
+    }
+
+    /// Should the mesher create a face on the side of `self` that touches
+    /// `neighbor`?
+    ///
+    /// - Air never has faces.
+    /// - Water only shows a face where it meets air (the surface). Water next
+    ///   to water, or water next to the ground, is hidden, so no face. This is
+    ///   what removes the grid of walls inside lakes.
+    /// - Everything else shows a face wherever the neighbor is see-through
+    ///   (air, water, leaves), so the lake bed under the water is still drawn.
+    pub const fn should_draw_face_against(&self, neighbor: &Block) -> bool {
+        match self.kind {
+            BlockKind::Air => false,
+            BlockKind::Water => matches!(neighbor.kind, BlockKind::Air),
+            _ => neighbor.is_transparent(),
+        }
+    }
 }

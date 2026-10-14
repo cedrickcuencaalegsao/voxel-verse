@@ -1,7 +1,12 @@
+use crate::models::grass_model::{GrassInstance, GrassModel};
+use crate::models::leaves_model::{LeavesInstance, LeavesModel};
+use crate::models::soil_model::{SoilInstance, SoilModel};
+use crate::models::wood_model::{WoodInstance, WoodModel};
 use crate::rendering::atlas::{face_tint, quad_uvs_for_hashed};
 use crate::rendering::greedy_meshing::generate_chunk_quads;
 use crate::rendering::materials::{BlockAtlas, BlockFace};
 use crate::rendering::texture::block_hash;
+use crate::utils::constants::{CHUNK_HEIGHT, CHUNK_SIZE};
 use crate::world::block::BlockKind;
 use crate::world::chunk::Chunk;
 use bevy::asset::RenderAssetUsages;
@@ -13,6 +18,11 @@ use bevy::prelude::*;
 /// so the old water mesh can be replaced when the chunk is rebuilt.
 #[derive(Component)]
 pub struct ChunkWaterMesh(Entity);
+
+/// The model instances (grass, leaves, wood) spawned for a chunk, so they can
+/// be despawned and rebuilt when the chunk is remeshed.
+#[derive(Component)]
+pub struct ChunkModels(Vec<Entity>);
 
 /// Vertex data for one mesh (the solid blocks or the water).
 #[derive(Default)]
@@ -52,9 +62,9 @@ fn face_tangents(normal: [f32; 3]) -> (Vec3, Vec3) {
     match normal {
         // Side faces: v is always +Y so the grass cap stays on top.
         // u is chosen so u.cross(v) == outward normal (keeps winding correct).
-        [1.0, 0.0, 0.0] => (Vec3::NEG_Z, Vec3::Y), // +X
-        [-1.0, 0.0, 0.0] => (Vec3::Z, Vec3::Y),    // -X
-        [0.0, 0.0, 1.0] => (Vec3::X, Vec3::Y),     // +Z
+        [1.0, 0.0, 0.0] => (Vec3::NEG_Z, Vec3::Y),  // +X
+        [-1.0, 0.0, 0.0] => (Vec3::Z, Vec3::Y),     // -X
+        [0.0, 0.0, 1.0] => (Vec3::X, Vec3::Y),      // +Z
         [0.0, 0.0, -1.0] => (Vec3::NEG_X, Vec3::Y), // -Z
 
         // Top / bottom: orientation doesn't matter visually.
@@ -79,16 +89,69 @@ fn block_face_from_normal(normal: [f32; 3]) -> BlockFace {
     }
 }
 
+/// True if at least one of the block's six neighbours is not solid, i.e. the
+/// block can actually be seen. Neighbours outside this chunk count as exposed,
+/// so blocks on a chunk border are always drawn (never a hole).
+fn is_exposed(chunk: &Chunk, x: usize, y: usize, z: usize) -> bool {
+    const DIRS: [(i32, i32, i32); 6] = [
+        (1, 0, 0),
+        (-1, 0, 0),
+        (0, 1, 0),
+        (0, -1, 0),
+        (0, 0, 1),
+        (0, 0, -1),
+    ];
+    let (cs, ch) = (CHUNK_SIZE as i32, CHUNK_HEIGHT as i32);
+
+    for (dx, dy, dz) in DIRS {
+        let nx = x as i32 + dx;
+        let ny = y as i32 + dy;
+        let nz = z as i32 + dz;
+        if nx < 0 || ny < 0 || nz < 0 || nx >= cs || ny >= ch || nz >= cs {
+            return true;
+        }
+        if !chunk
+            .get_block(nx as usize, ny as usize, nz as usize)
+            .is_solid()
+        {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn remesh_chunks(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     atlas: Res<BlockAtlas>,
+    grass_model: Res<GrassModel>,
+    leaves_model: Res<LeavesModel>,
+    wood_model: Res<WoodModel>,
+    soil_model: Res<SoilModel>,
     query: Query<
-        (Entity, &Chunk, Option<&Transform>, Option<&ChunkWaterMesh>),
+        (
+            Entity,
+            &Chunk,
+            Option<&Transform>,
+            Option<&ChunkWaterMesh>,
+            Option<&ChunkModels>,
+        ),
         Changed<Chunk>,
     >,
 ) {
-    for (entity, chunk, transform, old_water) in query.iter() {
+    // When a block kind has a loaded GLB, it is drawn as model instances and
+    // left out of the chunk mesh. Otherwise the procedural textures are used.
+    let scene_for = |kind: BlockKind| -> Option<&Handle<Scene>> {
+        match kind {
+            BlockKind::Grass => grass_model.0.as_ref(),
+            BlockKind::Leaves => leaves_model.0.as_ref(),
+            BlockKind::Wood => wood_model.0.as_ref(),
+            BlockKind::Dirt => soil_model.0.as_ref(),
+            _ => None,
+        }
+    };
+
+    for (entity, chunk, transform, old_water, old_models) in query.iter() {
         if !chunk.needs_remesh {
             continue;
         }
@@ -107,6 +170,11 @@ pub fn remesh_chunks(
         let mut water = MeshData::default();
 
         for quad in &quads {
+            // A GLB instance draws this block instead.
+            if scene_for(quad.block_kind).is_some() {
+                continue;
+            }
+
             let target = if matches!(quad.block_kind, BlockKind::Water) {
                 &mut water
             } else {
@@ -154,7 +222,9 @@ pub fn remesh_chunks(
                 .extend_from_slice(&quad_uvs_for_hashed(quad.block_kind, face, hash));
 
             let tint = face_tint(hash);
-            target.colors.extend_from_slice(&[[tint, tint, tint, 1.0]; 4]);
+            target
+                .colors
+                .extend_from_slice(&[[tint, tint, tint, 1.0]; 4]);
 
             target
                 .indices
@@ -191,6 +261,74 @@ pub fn remesh_chunks(
             if let Some(id) = water_entity {
                 commands.entity(entity).insert(ChunkWaterMesh(id));
             }
+        }
+
+        // Models: remove the old instances, then spawn one GLB instance on
+        // every visible grass / leaves / wood block of the rebuilt chunk.
+        if let Some(old) = old_models {
+            for &e in &old.0 {
+                commands.entity(e).despawn();
+            }
+        }
+
+        let mut ids = Vec::new();
+        commands.entity(entity).with_children(|parent| {
+            for y in 0..CHUNK_HEIGHT {
+                for z in 0..CHUNK_SIZE {
+                    for x in 0..CHUNK_SIZE {
+                        let kind = chunk.get_block(x, y, z).kind;
+                        let Some(scene) = scene_for(kind) else {
+                            continue;
+                        };
+
+                        // Skip buried blocks (e.g. leaves inside the canopy).
+                        if !is_exposed(chunk, x, y, z) {
+                            continue;
+                        }
+
+                        // Stable per-block rotation: hash the WORLD position so
+                        // it never changes when the chunk is remeshed. The kind
+                        // is mixed in so grass/leaves/wood rotate independently.
+                        let wx = chunk_origin.x as i32 + x as i32;
+                        let wy = chunk_origin.y as i32 + y as i32;
+                        let wz = chunk_origin.z as i32 + z as i32;
+                        let quarter_turns =
+                            (block_hash(wx, wy, wz, 7 + kind as u32) as u64 % 4) as f32;
+
+                        let mut instance = parent.spawn((
+                            SceneRoot(scene.clone()),
+                            // Block (x,y,z) occupies [x,x+1]..., so +0.5 is its
+                            // centre. Adjust if the GLB origin differs.
+                            Transform::from_xyz(x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5)
+                                .with_rotation(Quat::from_rotation_y(
+                                    quarter_turns * std::f32::consts::FRAC_PI_2,
+                                )),
+                        ));
+                        match kind {
+                            BlockKind::Grass => {
+                                instance.insert(GrassInstance);
+                            }
+                            BlockKind::Leaves => {
+                                instance.insert(LeavesInstance);
+                            }
+                            BlockKind::Wood => {
+                                instance.insert(WoodInstance);
+                            }
+                            BlockKind::Dirt => {
+                                instance.insert(SoilInstance);
+                            }
+                            _ => {}
+                        }
+                        ids.push(instance.id());
+                    }
+                }
+            }
+        });
+
+        if ids.is_empty() {
+            commands.entity(entity).remove::<ChunkModels>();
+        } else {
+            commands.entity(entity).insert(ChunkModels(ids));
         }
     }
 }
