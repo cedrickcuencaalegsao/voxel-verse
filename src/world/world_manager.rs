@@ -1,3 +1,4 @@
+use super::chunk::Chunk;
 use super::generator;
 use super::terrain::TerrainGenerator;
 use crate::lobby::GameSettings;
@@ -29,12 +30,14 @@ impl WorldManager {
 #[derive(Component)]
 pub struct Player;
 
-/// System that ensures chunks around the player are spawned
+/// System that spawns chunks around the player and despawns the ones that
+/// have fallen outside the render distance.
 pub fn chunk_streaming_system(
     mut commands: Commands,
     mut world: ResMut<WorldManager>,
     settings: Res<GameSettings>,
     player_query: Query<&Transform, With<Player>>,
+    loaded_chunks: Query<(Entity, &Chunk)>,
 ) {
     let player_transform = match player_query.iter().next() {
         Some(t) => t,
@@ -58,6 +61,23 @@ pub fn chunk_streaming_system(
         name,
     } = &mut *world;
 
+    // ── Unload: despawn chunks that are too far from the player ──────────────
+    // One chunk of extra margin (hysteresis) so a chunk sitting right on the
+    // edge doesn't get loaded and unloaded over and over as the player moves.
+    // Despawning the chunk entity also despawns its children (water mesh and
+    // the grass/leaves/wood/soil model instances).
+    let unload_radius = radius + 1;
+    for (entity, chunk) in &loaded_chunks {
+        let dx = (chunk.position.x - player_chunk.x).abs();
+        let dz = (chunk.position.z - player_chunk.z).abs();
+        if dx.max(dz) > unload_radius {
+            let idx = chunk_pos_to_idx(chunk.position.x, chunk.position.y, chunk.position.z);
+            chunk_entities.remove(&idx);
+            commands.entity(entity).despawn();
+        }
+    }
+
+    // ── Load: spawn chunks inside the render distance ────────────────────────
     for x in (player_chunk.x - radius)..=(player_chunk.x + radius) {
         for z in (player_chunk.z - radius)..=(player_chunk.z + radius) {
             let chunk_pos = IVec3::new(x, 0, z); // fixed height layer for now
