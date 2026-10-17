@@ -4,8 +4,15 @@
 //! The scene runs its own small day/night cycle (see `lobby_cycle_system`).
 //! It is fully separate from `environment::daynight`, so the two never touch
 //! each other's lights.
+//!
+//! Grass, dirt, wood and leaves use their GLB models when the files exist
+//! (see `crate::models`); otherwise, and for stone, plain coloured cubes.
 
 use super::LobbyScene;
+use crate::models::grass_model::GrassModel;
+use crate::models::leaves_model::LeavesModel;
+use crate::models::soil_model::SoilModel;
+use crate::models::wood_model::WoodModel;
 use bevy::prelude::*;
 
 const N: usize = 9; // island is N x N x N blocks
@@ -27,7 +34,13 @@ enum Kind {
     Leaves,
 }
 
-const KINDS: [Kind; 5] = [Kind::Grass, Kind::Dirt, Kind::Stone, Kind::Wood, Kind::Leaves];
+const KINDS: [Kind; 5] = [
+    Kind::Grass,
+    Kind::Dirt,
+    Kind::Stone,
+    Kind::Wood,
+    Kind::Leaves,
+];
 
 impl Kind {
     fn index(self) -> usize {
@@ -84,7 +97,14 @@ fn build_island() -> Grid {
     }
 
     // Rocks.
-    for (x, y, z) in [(6, 5, 2), (7, 5, 2), (6, 5, 3), (6, 6, 2), (7, 5, 6), (1, 5, 6)] {
+    for (x, y, z) in [
+        (6, 5, 2),
+        (7, 5, 2),
+        (6, 5, 3),
+        (6, 6, 2),
+        (7, 5, 6),
+        (1, 5, 6),
+    ] {
         g[x][y][z] = Some(Kind::Stone);
     }
 
@@ -246,6 +266,10 @@ pub(super) fn spawn_lobby_scene(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    grass: Option<Res<GrassModel>>,
+    soil: Option<Res<SoilModel>>,
+    wood: Option<Res<WoodModel>>,
+    leaves: Option<Res<LeavesModel>>,
 ) {
     // Start every lobby visit in the morning.
     commands.insert_resource(LobbyTime(LOBBY_START_TIME));
@@ -302,12 +326,22 @@ pub(super) fn spawn_lobby_scene(
     // Three shades per block type so the island doesn't look flat.
     let palette: [[Handle<StandardMaterial>; 3]; 5] = KINDS.map(|k| {
         let (r, g, b) = k.color();
-        [0.90f32, 1.00, 1.10].map(|s| {
-            materials.add(color((r * s).min(1.0), (g * s).min(1.0), (b * s).min(1.0)))
-        })
+        [0.90f32, 1.00, 1.10]
+            .map(|s| materials.add(color((r * s).min(1.0), (g * s).min(1.0), (b * s).min(1.0))))
     });
     let cube = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
     let grid = build_island();
+
+    // A GLB for this block kind, if its file exists. Stone has no model yet.
+    let model_for = |kind: Kind| -> Option<Handle<Scene>> {
+        match kind {
+            Kind::Grass => grass.as_ref().and_then(|m| m.0.clone()),
+            Kind::Dirt => soil.as_ref().and_then(|m| m.0.clone()),
+            Kind::Wood => wood.as_ref().and_then(|m| m.0.clone()),
+            Kind::Leaves => leaves.as_ref().and_then(|m| m.0.clone()),
+            Kind::Stone => None,
+        }
+    };
 
     commands
         .spawn((
@@ -324,12 +358,31 @@ pub(super) fn spawn_lobby_scene(
                         if !exposed(&grid, x, y, z) {
                             continue;
                         }
-                        let variant = (x * 31 + y * 17 + z * 13) % 3;
-                        root.spawn((
-                            Mesh3d(cube.clone()),
-                            MeshMaterial3d(palette[kind.index()][variant].clone()),
-                            Transform::from_xyz(x as f32 - 4.0, y as f32 + 0.5, z as f32 - 4.0),
-                        ));
+
+                        let pos =
+                            Transform::from_xyz(x as f32 - 4.0, y as f32 + 0.5, z as f32 - 4.0);
+
+                        if let Some(scene) = model_for(kind) {
+                            // Stable random quarter-turn per block so the pattern
+                            // doesn't repeat.
+                            let h = (x as u32).wrapping_mul(73856093)
+                                ^ (y as u32).wrapping_mul(19349663)
+                                ^ (z as u32).wrapping_mul(83492791);
+                            let turns = ((h >> 4) % 4) as f32;
+                            root.spawn((
+                                SceneRoot(scene),
+                                pos.with_rotation(Quat::from_rotation_y(
+                                    turns * std::f32::consts::FRAC_PI_2,
+                                )),
+                            ));
+                        } else {
+                            let variant = (x * 31 + y * 17 + z * 13) % 3;
+                            root.spawn((
+                                Mesh3d(cube.clone()),
+                                MeshMaterial3d(palette[kind.index()][variant].clone()),
+                                pos,
+                            ));
+                        }
                     }
                 }
             }

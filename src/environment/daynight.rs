@@ -153,9 +153,7 @@ fn hash64(mut x: u64) -> u64 {
 /// Stable pseudo-random number in [0, 1) for star `i`, channel `k`.
 fn star_rand(i: u64, k: u64) -> f32 {
     let h = hash64(
-        STAR_SEED
-            ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15)
-            ^ k.wrapping_mul(0xbf58_476d_1ce4_e5b9),
+        STAR_SEED ^ i.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ k.wrapping_mul(0xbf58_476d_1ce4_e5b9),
     );
     (h >> 40) as f32 / (1u64 << 24) as f32
 }
@@ -359,26 +357,20 @@ pub fn cycle_system(
             SkyLight::Sun => {
                 // The light uses a clamped height so shadows never get too long
                 // at dawn/dusk. The visible sun is still drawn at its real position.
-                let sun_pos = Vec3::new(
-                    sky.angle.sin(),
-                    sky.height.max(LIGHT_MIN_HEIGHT),
-                    0.3,
-                )
-                .normalize();
+                let sun_pos =
+                    Vec3::new(sky.angle.sin(), sky.height.max(LIGHT_MIN_HEIGHT), 0.3).normalize();
                 // Light travels away from the sun, toward the ground.
                 transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, -sun_pos);
                 light.illuminance = 10_000.0 * sky.sun_strength;
                 light.shadows_enabled = SUN_SHADOWS;
-                light.color = lerp_color(sunset_orange, day_white, smoothstep(0.0, 0.5, sky.height));
+                light.color =
+                    lerp_color(sunset_orange, day_white, smoothstep(0.0, 0.5, sky.height));
             }
             SkyLight::Moon => {
                 // The moon is opposite the sun.
-                let moon_pos = Vec3::new(
-                    -sky.angle.sin(),
-                    (-sky.height).max(LIGHT_MIN_HEIGHT),
-                    -0.3,
-                )
-                .normalize();
+                let moon_pos =
+                    Vec3::new(-sky.angle.sin(), (-sky.height).max(LIGHT_MIN_HEIGHT), -0.3)
+                        .normalize();
                 transform.rotation = Quat::from_rotation_arc(Vec3::NEG_Z, -moon_pos);
                 light.illuminance = MOON_ILLUMINANCE * sky.moon_strength;
                 light.shadows_enabled = MOON_SHADOWS;
@@ -388,11 +380,7 @@ pub fn cycle_system(
 
     // Dim, blue-tinted ambient fill at night so faces aren't visible "for free".
     ambient.brightness = AMBIENT_NIGHT + (AMBIENT_DAY - AMBIENT_NIGHT) * sky.sun_strength;
-    ambient.color = lerp_color(
-        Color::srgb(0.55, 0.65, 1.0),
-        Color::WHITE,
-        sky.sun_strength,
-    );
+    ambient.color = lerp_color(Color::srgb(0.55, 0.65, 1.0), Color::WHITE, sky.sun_strength);
 
     let night = NIGHT_SKY;
     let day = Color::srgb(0.4, 0.65, 0.95);
@@ -480,39 +468,39 @@ pub fn sky_bodies_system(
 /// TEMPORARY: logs every light in the world every 2 seconds, so you can see
 /// which one is keeping the blocks bright at night. Remove it (and its line in
 /// `plugin.rs`) once the night looks right.
-pub fn debug_lights_system(
-    time: Res<Time>,
-    mut elapsed: Local<f32>,
-    cycle: Res<DayNightCycle>,
-    ambient: Res<AmbientLight>,
-    directional: Query<(Entity, &DirectionalLight, Has<SkyLight>)>,
-    points: Query<(Entity, &PointLight)>,
-    spots: Query<(Entity, &SpotLight)>,
-) {
-    *elapsed += time.delta_secs();
-    if *elapsed < 2.0 {
-        return;
-    }
-    *elapsed = 0.0;
-
-    let sky = sky_state(cycle.time);
-    info!(
-        "[lights] time={:.3} height={:.2} sun_strength={:.2} moon_strength={:.2} ambient={:.1}",
-        cycle.time, sky.height, sky.sun_strength, sky.moon_strength, ambient.brightness
-    );
-    for (entity, light, is_sky) in &directional {
-        info!(
-            "[lights]   DirectionalLight {entity:?} illuminance={:.0} shadows={} ours={}",
-            light.illuminance, light.shadows_enabled, is_sky
-        );
-    }
-    for (entity, light) in &points {
-        info!("[lights]   PointLight {entity:?} intensity={:.0}", light.intensity);
-    }
-    for (entity, light) in &spots {
-        info!("[lights]   SpotLight {entity:?} intensity={:.0}", light.intensity);
-    }
-}
+// pub fn debug_lights_system(
+//     time: Res<Time>,
+//     mut elapsed: Local<f32>,
+//     cycle: Res<DayNightCycle>,
+//     ambient: Res<AmbientLight>,
+//     directional: Query<(Entity, &DirectionalLight, Has<SkyLight>)>,
+//     points: Query<(Entity, &PointLight)>,
+//     spots: Query<(Entity, &SpotLight)>,
+// ) {
+//     *elapsed += time.delta_secs();
+//     if *elapsed < 2.0 {
+//         return;
+//     }
+//     *elapsed = 0.0;
+//
+//     let sky = sky_state(cycle.time);
+//     info!(
+//         "[lights] time={:.3} height={:.2} sun_strength={:.2} moon_strength={:.2} ambient={:.1}",
+//         cycle.time, sky.height, sky.sun_strength, sky.moon_strength, ambient.brightness
+//     );
+//     for (entity, light, is_sky) in &directional {
+//         info!(
+//             "[lights]   DirectionalLight {entity:?} illuminance={:.0} shadows={} ours={}",
+//             light.illuminance, light.shadows_enabled, is_sky
+//         );
+//     }
+//     for (entity, light) in &points {
+//         info!("[lights]   PointLight {entity:?} intensity={:.0}", light.intensity);
+//     }
+//     for (entity, light) in &spots {
+//         info!("[lights]   SpotLight {entity:?} intensity={:.0}", light.intensity);
+//     }
+// }
 
 // ── stray lights ─────────────────────────────────────────────────────────────
 
@@ -522,7 +510,14 @@ pub fn debug_lights_system(
 /// code that spawns it, you can remove this system and its line in `plugin.rs`.
 pub fn remove_stray_lights(
     mut commands: Commands,
-    stray: Query<Entity, (With<DirectionalLight>, Without<SkyLight>, Without<LobbyScene>)>,
+    stray: Query<
+        Entity,
+        (
+            With<DirectionalLight>,
+            Without<SkyLight>,
+            Without<LobbyScene>,
+        ),
+    >,
 ) {
     for entity in &stray {
         warn!(

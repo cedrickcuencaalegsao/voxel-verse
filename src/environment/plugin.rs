@@ -1,5 +1,5 @@
 use super::daynight::{
-    DayNightCycle, cycle_system, debug_lights_system, setup_sky, sky_bodies_system, remove_stray_lights
+    DayNightCycle, cycle_system, remove_stray_lights, setup_sky, sky_bodies_system,
 };
 use bevy::light::DirectionalLightShadowMap;
 use bevy::prelude::*;
@@ -12,6 +12,6 @@ impl Plugin for EnvironmentPlugin {
             .insert_resource(DayNightCycle::default())
             .add_systems(Startup, setup_sky)
             .add_systems(Update, (cycle_system, sky_bodies_system).chain())
-            .add_systems(Update, (debug_lights_system, remove_stray_lights)); // TEMPORARY: remove when fixed
+            .add_systems(Update, remove_stray_lights); // TEMPORARY: remove when fixed
     }
 }
